@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMoney, parseReceipt, guessCategory } from '../src/parse.js';
+import { parseMoney, parseReceipt, parseWalletAmount, guessCategory } from '../src/parse.js';
 import { previousRange, allowanceFor, toCsv, summarize, summarizePeriod, payPeriod, weekDates, reportText } from '../public/summary.js';
 
 test('parseMoney handles Wallet and receipt formats', () => {
@@ -88,4 +88,13 @@ test('rewards value is never taken as the payment, even when read correctly', ()
 test('merchant label does not catch Total or other labels', () => {
   assert.equal(parseReceipt('You Paid\nRM3.00\nTotal\nKedai').merchant, null);
   assert.equal(parseReceipt('You Paid\nRM3.00\nTo\nPayment Time').merchant, null);
+});
+test('Wallet amounts accept currency formats and reject stray text', () => {
+  assert.equal(parseWalletAmount('MYR 1.10'), 110);
+  assert.equal(parseWalletAmount('RM1.10'), 110);
+  assert.equal(parseWalletAmount('1.10'), 110);
+  assert.equal(parseWalletAmount('MYR\u00a01,234.50'), 123450);
+  assert.equal(parseWalletAmount('1.10 MYR'), 110);
+  assert.equal(parseWalletAmount('99 Speedmart> Amount'), null);
+  assert.equal(parseWalletAmount(''), null);
 });
