@@ -1,5 +1,5 @@
 import { parseMoney, parseReceipt, guessCategory, merchantKey } from './parse.js';
-import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, toCsv, weekDates, windowStart } from '../public/summary.js';
+import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -127,7 +127,8 @@ async function loadSummary(env, date) {
   const end = [...weekDates(date), date].sort().at(-1);
   const [{ results }, budget] = await Promise.all([
     env.DB.prepare(
-      `SELECT id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review
+      `SELECT id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review,
+         EXISTS (SELECT 1 FROM receipts WHERE transaction_id = transactions.id) AS has_receipt
        FROM transactions WHERE local_date BETWEEN ? AND ?`,
     ).bind(windowStart(date), end).all(),
     budgetFor(env, date),
@@ -139,17 +140,26 @@ async function loadHome(env, view, date) {
   const today = localDate();
   const { start, end } = periodFor(view, date);
   const period = payPeriod(date).start;
-  const [{ results }, income, commitments, spentToday, budget, defaultBudget] = await Promise.all([
+  const previous = previousRange(view, start, end, today);
+  const [{ results }, income, commitments, spentToday, budget, defaultBudget, previousSpend, latestQr] = await Promise.all([
     env.DB.prepare('SELECT amount_sen, category, source, local_date FROM transactions WHERE local_date BETWEEN ? AND ?').bind(start, end).all(),
     getIncome(env, period),
     getCommitments(env, period),
     env.DB.prepare('SELECT COALESCE(SUM(amount_sen), 0) AS total FROM transactions WHERE local_date = ?').bind(today).first(),
     budgetFor(env, today),
     getDefaultBudget(env),
+    env.DB.prepare('SELECT COALESCE(SUM(amount_sen), 0) AS total FROM transactions WHERE local_date BETWEEN ? AND ?').bind(previous.start, previous.end).first(),
+    env.DB.prepare(
+      `SELECT id, amount_sen, merchant, occurred_at FROM transactions
+       WHERE source = 'shopeepay_qr' AND local_date = ? AND id NOT IN (SELECT transaction_id FROM receipts)
+       ORDER BY occurred_at DESC LIMIT 1`,
+    ).bind(today).first(),
   ]);
   return {
     ...summarizePeriod(results, { view, start, end, today, income, commitments: sumOf(commitments) }),
     commitmentList: commitments,
+    previousTotal: previousSpend.total,
+    receiptCandidate: latestQr,
     todayTotal: spentToday.total,
     todayBudget: budget.amount,
     todayBudgetSource: budget.source,
@@ -219,6 +229,58 @@ async function exportCsv(env) {
   return new Response(toCsv(results), {
     headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="kiraduit.csv"', 'cache-control': 'no-store' },
   });
+}
+
+const MAX_IMAGE_CHARS = 1500000; // D1 stores at most 2 MB in one row
+
+function cleanImage(value) {
+  const image = String(value ?? '').replace(/^data:image\/\w+;base64,/, '').replace(/\s/g, '');
+  if (!image || !/^[A-Za-z0-9+/]+=*$/.test(image)) return { error: 'Send the photo as base64 text.', status: 422 };
+  if (!image.startsWith('/9j/') && !image.startsWith('iVBOR')) return { error: 'Send the photo as a JPEG or PNG.', status: 422 };
+  if (image.length > MAX_IMAGE_CHARS) return { error: 'That photo is too large. Resize it and try again.', status: 413 };
+  return { image };
+}
+
+const saveReceipt = (env, id, image) => env.DB.prepare(
+  `INSERT INTO receipts (transaction_id, image, created_at) VALUES (?, ?, ?)
+   ON CONFLICT (transaction_id) DO UPDATE SET image = excluded.image, created_at = excluded.created_at`,
+).bind(id, image, new Date().toISOString()).run();
+
+async function saveLatestReceipt(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const { image, error, status } = cleanImage(body.image);
+  if (error) return text(error, status);
+  const latest = await env.DB.prepare(
+    `SELECT id, amount_sen, merchant FROM transactions
+     WHERE source = 'shopeepay_qr' AND id NOT IN (SELECT transaction_id FROM receipts)
+     ORDER BY occurred_at DESC LIMIT 1`,
+  ).first();
+  if (!latest) return text('No QR purchase is waiting for a receipt.', 404);
+  await saveReceipt(env, latest.id, image);
+  return text(`Receipt saved for ${formatRM(latest.amount_sen)} at ${latest.merchant}`);
+}
+
+async function receiptRoute(request, env, id) {
+  if (request.method === 'GET') {
+    const row = await env.DB.prepare('SELECT image FROM receipts WHERE transaction_id = ?').bind(id).first();
+    if (!row) return text('No receipt for this purchase.', 404);
+    const bytes = Uint8Array.from(atob(row.image), (c) => c.charCodeAt(0));
+    return new Response(bytes, { headers: { 'content-type': row.image.startsWith('/9j/') ? 'image/jpeg' : 'image/png', 'cache-control': 'no-store' } });
+  }
+  if (request.method === 'DELETE') {
+    await env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(id).run();
+    return json({ ok: true });
+  }
+  if (request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const { image, error, status } = cleanImage(body.image);
+    if (error) return json({ error }, status);
+    const exists = await env.DB.prepare('SELECT id FROM transactions WHERE id = ?').bind(id).first();
+    if (!exists) return json({ error: 'That purchase no longer exists.' }, 404);
+    await saveReceipt(env, id, image);
+    return json({ ok: true });
+  }
+  return text('Not found.', 404);
 }
 
 async function rememberCategory(env, merchant, category) {
@@ -292,9 +354,16 @@ async function api(request, env, url) {
     return json(row, 201);
   }
 
+  if (path === '/api/receipts/latest' && method === 'POST') return saveLatestReceipt(request, env);
+  const receipt = path.match(/^\/api\/transactions\/([\w-]+)\/receipt$/);
+  if (receipt) return receiptRoute(request, env, receipt[1]);
+
   const match = path.match(/^\/api\/transactions\/([\w-]+)$/);
   if (match && method === 'DELETE') {
-    await env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(match[1]).run();
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(match[1]),
+      env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(match[1]),
+    ]);
     return json({ ok: true });
   }
   if (match && method === 'PATCH') {

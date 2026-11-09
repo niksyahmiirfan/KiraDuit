@@ -70,6 +70,23 @@ You can also set or change today's budget in the app. The screen turns reddish o
 
 Every logged payment shows a "Logged" notification. If you don't see one, the payment wasn't saved, so add it by hand.
 
+## 6. Optional: ask for a receipt photo after each QR payment
+
+KiraDuit offers to add a photo for 30 minutes after a QR purchase, and you can add one to any purchase by tapping it. To be asked straight after the double-tap instead, add these to the end of **Log receipt**:
+
+1. **Choose from Menu**: prompt "Add a receipt photo?", options **Take photo** and **Skip**
+2. Under **Take photo**, add:
+   - **Take Photo** (turn Show Camera Preview on)
+   - **Resize Image**: width 1400
+   - **Convert Image**: JPEG, quality 70%
+   - **Base64 Encode**: Line Breaks set to None
+   - **Get Contents of URL**: `https://YOUR-ADDRESS/api/receipts/latest`, method POST, same `Authorization` header, Request Body JSON with `image` = the Base64 Encoded result
+   - **Show Notification** (body: Contents of URL)
+
+## 7. Set up the Shortcuts page
+
+ShopeePay opens directly. Touch 'n Go eWallet and MAE need one small iPhone Shortcut each: create a shortcut with the **Open App** action, and name them exactly **Open TNG** and **Open MAE**.
+
 ## Good to know
 
 - Anything the scan isn't sure about appears as "Tap to check".

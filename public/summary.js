@@ -167,3 +167,10 @@ export function toCsv(txs) {
   });
   return `Date,Time,Merchant,Category,Amount (RM),Paid with,Card,Needs checking\r\n${rows.join('\r\n')}\r\n`;
 }
+
+/** The matching stretch of the previous week or pay period, so a part-finished period compares fairly. */
+export function previousRange(view, start, end, today) {
+  const prevStart = view === 'month' ? payPeriod(addDays(start, -1)).start : addDays(start, -7);
+  const lastDay = today < end ? today : end;
+  return { start: prevStart, end: addDays(prevStart, Math.max(0, dayCount(start, lastDay) - 1)) };
+}

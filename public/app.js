@@ -1,4 +1,4 @@
-import { CATEGORIES, SOURCE_LABELS, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, summarize, summarizePeriod, windowStart } from './summary.js';
+import { CATEGORIES, SOURCE_LABELS, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
 
 const DEMO = Boolean(window.KIRADUIT_DEMO);
 const app = document.getElementById('app');
@@ -20,6 +20,7 @@ let page = 'home';
 let range = store.get('kd-range') === 'month' ? 'month' : 'week';
 let homeDate = localDate();
 let home = null;
+let moneyOpen = false;
 
 /* ---- data ---- */
 function makeDemoData() {
@@ -51,6 +52,7 @@ const demoBudgets = DEMO ? { [localDate()]: 6000 } : {};
 let demoIncome = DEMO ? 450000 : null;
 let demoDefault = null;
 let demoCommitments = DEMO ? [{ id: 'c1', name: 'Rent', amount_sen: 90000 }, { id: 'c2', name: 'Car loan', amount_sen: 65000 }, { id: 'c3', name: 'Phone plan', amount_sen: 6800 }] : [];
+const demoReceipts = new Map();
 const commitmentsTotal = () => demoCommitments.reduce((a, c) => a + c.amount_sen, 0);
 function demoBudget(d) {
   if (demoBudgets[d]) return { amount: demoBudgets[d], source: 'set' };
@@ -73,12 +75,14 @@ async function request(path, options = {}) {
   return parsed ?? body;
 }
 const api = DEMO ? {
-  load: async (d) => summarize(demoTxs.filter((t) => t.local_date >= windowStart(d)), d, demoBudget(d).amount, demoBudget(d).source),
+  load: async (d) => summarize(demoTxs.filter((t) => t.local_date >= windowStart(d)).map((t) => ({ ...t, has_receipt: demoReceipts.has(t.id) ? 1 : 0 })), d, demoBudget(d).amount, demoBudget(d).source),
   loadHome: async (view, d) => {
     const today = localDate();
     return {
       ...summarizePeriod(demoTxs, { view, ...periodFor(view, d), today, income: demoIncome, commitments: commitmentsTotal() }),
       commitmentList: demoCommitments,
+      previousTotal: (() => { const { start, end } = periodFor(view, d); const p = previousRange(view, start, end, today); return demoTxs.filter((t) => t.local_date >= p.start && t.local_date <= p.end).reduce((a, t) => a + t.amount_sen, 0); })(),
+      receiptCandidate: demoTxs.filter((t) => t.source === 'shopeepay_qr' && t.local_date === today && !demoReceipts.has(t.id)).sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))[0] || null,
       todayTotal: demoTxs.filter((t) => t.local_date === today).reduce((a, t) => a + t.amount_sen, 0),
       todayBudget: demoBudget(today).amount,
       todayBudgetSource: demoBudget(today).source,
@@ -87,6 +91,9 @@ const api = DEMO ? {
   },
   setBudget: async (d, amount) => { demoBudgets[d] = toSen(amount); },
   setIncome: async (amount) => { demoIncome = toSen(amount); },
+  getReceipt: async (id) => demoReceipts.get(id),
+  setReceipt: async (id, base64) => { demoReceipts.set(id, `data:image/jpeg;base64,${base64}`); },
+  removeReceipt: async (id) => { demoReceipts.delete(id); },
   setDefaultBudget: async (amount) => { demoDefault = amount ? toSen(amount) : null; },
   addCommitment: async (f) => demoCommitments.push({ id: `c${Date.now()}`, name: f.name, amount_sen: toSen(f.amount) }),
   removeCommitment: async (id) => { demoCommitments = demoCommitments.filter((c) => c.id !== id); },
@@ -101,6 +108,13 @@ const api = DEMO ? {
   loadHome: (view, d) => request(`/api/home?view=${view}&date=${d}`),
   setBudget: (d, amount) => request(`/api/budget?date=${d}`, { method: 'POST', body: JSON.stringify({ amount }) }),
   setIncome: (amount) => request('/api/income', { method: 'POST', body: JSON.stringify({ amount }) }),
+  getReceipt: async (id) => {
+    const res = await fetch(`/api/transactions/${id}/receipt`, { headers: { authorization: `Bearer ${store.get('kd-key')}` } });
+    if (!res.ok) throw new Error('The receipt photo could not be loaded.');
+    return URL.createObjectURL(await res.blob());
+  },
+  setReceipt: (id, image) => request(`/api/transactions/${id}/receipt`, { method: 'POST', body: JSON.stringify({ image }) }),
+  removeReceipt: (id) => request(`/api/transactions/${id}/receipt`, { method: 'DELETE' }),
   setDefaultBudget: (amount) => request('/api/default-budget', { method: 'POST', body: JSON.stringify({ amount }) }),
   addCommitment: (f) => request('/api/commitments', { method: 'POST', body: JSON.stringify(f) }),
   removeCommitment: (id) => request(`/api/commitments/${id}`, { method: 'DELETE' }),
@@ -181,36 +195,110 @@ const breakdown = (s) => {
   </div></section>`;
 };
 
+const ICONS = {
+  home: '<path d="M4 11l8-7 8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-6h4v6"/>',
+  day: '<rect x="4" y="5.5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/><path d="M8 14h3v3H8z"/>',
+  links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
+  add: '<path d="M12 5v14M5 12h14"/>',
+};
+const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+const TABS = [['home', 'Home'], ['day', 'Day'], ['links', 'Shortcuts']];
+
 const dock = () => `<nav class="dock" aria-label="Main">
-  <button data-page="home" ${page === 'home' ? 'aria-current="page"' : ''}>Home</button>
-  <button data-page="day" ${page === 'day' ? 'aria-current="page"' : ''}>Day</button>
-  <button data-add>Add</button></nav>`;
+  ${TABS.map(([id, label]) => `<button data-page="${id}" aria-label="${label}" title="${label}" ${page === id ? 'aria-current="page"' : ''}>${icon(id)}</button>`).join('')}
+  <button data-add aria-label="Add purchase" title="Add purchase">${icon('add')}</button></nav>`;
 
 const shortDate = (d) => dayName(d, { day: 'numeric', month: 'short' });
 
-function incomeBlock(h) {
-  if (h.income === null) {
-    return `<section><h2>Income</h2><button class="income-prompt" data-income>Add your monthly income</button></section>`;
-  }
-  const over = h.left < 0;
-  return `<section><h2>Income <button class="linkish" data-income>Change</button></h2>
-    <span class="gauge"><i style="width:${Math.min(100, ((h.total + h.commitments) / h.income) * 100)}%"></i></span>
-    <div class="money">
-      <div><span>Received ${shortDate(h.start)}</span><b>${formatRM(h.income)}</b></div>
-      <div><span>Spent and committed</span><b>${formatRM(h.total + h.commitments)}</b></div>
-      <div><span>${over ? 'Overspent' : 'Left'}</span><b>${formatRM(Math.abs(h.left))}</b></div>
-      ${h.daysToPayday !== null ? `<div><span>Can spend per day</span><b>${formatRM(h.dailyAllowance)}</b></div>
-      <div><span>Next pay ${shortDate(h.nextPayday)}</span><b>${h.daysToPayday} ${h.daysToPayday === 1 ? 'day' : 'days'}</b></div>` : ''}
-    </div></section>`;
+const heroMoney = (sen) => {
+  const [whole, cents] = formatRM(sen).split('.');
+  return `${whole}<small>.${cents}</small>`;
+};
+
+function compareLine(h, noun) {
+  if (!h.previousTotal) return null;
+  const diff = h.total - h.previousTotal;
+  if (diff === 0) return `Same as ${noun}`;
+  return `${formatRM(Math.abs(diff))} ${diff < 0 ? 'less' : 'more'} than ${noun}`;
 }
 
-function commitmentsBlock(h) {
+function heroBody(h) {
+  if (h.view === 'week') {
+    return `<p class="hero-label">Spent this week</p><p class="hero-num">${heroMoney(h.total)}</p>
+      <p class="hero-sub">${compareLine(h, 'this point last week') || `${h.count} ${h.count === 1 ? 'purchase' : 'purchases'}`}</p>`;
+  }
+  if (h.income === null) {
+    return `<p class="hero-label">Spent this pay period</p><p class="hero-num">${heroMoney(h.total)}</p>
+      <button class="hero-add" data-income>Add your monthly income</button>`;
+  }
+  const current = h.daysToPayday !== null;
+  const over = h.left < 0;
+  const share = (v) => `${Math.min(100, (v / Math.max(h.income, h.commitments + h.total)) * 100)}%`;
+  return `<p class="hero-label">${over ? 'Overspent' : current ? `Left until ${shortDate(h.nextPayday)}` : 'Left over from this pay period'}</p>
+    <p class="hero-num">${heroMoney(Math.abs(h.left))}</p>
+    ${current ? `<p class="hero-sub">${formatRM(h.dailyAllowance)} a day for ${h.daysToPayday} ${h.daysToPayday === 1 ? 'day' : 'days'}</p>` : ''}
+    <div class="stack" aria-hidden="true">
+      ${h.commitments ? `<i class="s-committed" style="width:${share(h.commitments)}"></i>` : ''}
+      ${h.total ? `<i class="s-spent" style="width:${share(h.total)}"></i>` : ''}
+      ${over ? '' : '<i class="s-left"></i>'}
+    </div>
+    <div class="key"><div><span>Income</span><b>${formatRM(h.income)}</b></div><div><span>Committed</span><b>${formatRM(h.commitments)}</b></div><div><span>Spent</span><b>${formatRM(h.total)}</b></div></div>`;
+}
+
+function todayTile(h) {
+  if (!h.todayBudget) {
+    return `<button class="tile" data-budget="${h.today}"><span>Today</span><b>${formatRM(h.todayTotal)}</b><small class="prompt">Set today's budget</small></button>`;
+  }
+  const diff = h.todayBudget - h.todayTotal;
+  const auto = h.todayBudgetSource === 'set' ? '' : ' (auto)';
+  return `<button class="tile ${diff < 0 ? 'over' : ''}" data-budget="${h.today}" aria-label="Today: ${esc(budgetLine(h.todayTotal, h.todayBudget))}. Change budget">
+    <span>Today</span><b>${formatRM(h.todayTotal)}</b>
+    <span class="gauge"><i style="width:${Math.min(100, (h.todayTotal / h.todayBudget) * 100)}%"></i></span>
+    <small>${formatRM(Math.abs(diff))} ${diff < 0 ? 'over' : 'left'}${auto}</small></button>`;
+}
+
+function calendar(h) {
+  const spent = h.days.map((d) => d.total).filter(Boolean);
+  const low = Math.min(...spent);
+  const high = Math.max(...spent);
+  // Scaled between your cheapest and dearest day, so ordinary differences still show.
+  const bucket = (v) => (!v ? 0 : high === low ? 2 : 1 + Math.min(3, Math.floor(((v - low) / (high - low)) * 4)));
+  const offset = (new Date(`${h.start}T00:00:00Z`).getUTCDay() + 6) % 7;
+  const heads = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<span>${d[0]}</span>`).join('');
+  const cells = h.days.map((d, i) => `<button class="cell h${bucket(d.total)} ${d.date === h.today ? 'today' : ''}" data-day="${d.date}"
+    ${i === 0 && offset ? `style="grid-column-start:${offset + 1}"` : ''} ${d.date > h.today ? 'disabled' : ''}
+    aria-label="${shortDate(d.date)}, ${formatRM(d.total)}">${Number(d.date.slice(8))}</button>`).join('');
+  return `<section><h2>${h.view === 'month' ? 'Spending calendar' : 'This week by day'}${h.biggest ? `<small>Highest ${formatRM(h.biggest.total)}</small>` : ''}</h2>
+    <div class="cal-head">${heads}</div><div class="cal">${cells}</div>
+    <div class="cal-key">Less<i class="h0"></i><i class="h1"></i><i class="h2"></i><i class="h3"></i><i class="h4"></i>More</div></section>`;
+}
+
+function topSpending(h) {
+  return `<section><h2>Top spending</h2>
+    ${h.byCategory.slice(0, 5).map((c) => `<div class="rank"><span>${esc(c.name)}<em>${Math.round((c.total / h.total) * 100)}%</em></span><span>${formatRM(c.total)}</span></div>`).join('')}
+    <div class="sub-head">Paid with</div>
+    ${h.bySource.map((p) => `<div class="rank"><span>${SOURCE_LABELS[p.name]}</span><span>${formatRM(p.total)}</span></div>`).join('')}
+  </section>`;
+}
+
+function moneySetup(h) {
   const current = h.daysToPayday !== null;
   const rows = h.commitmentList.map((c) => (current
     ? `<button class="list-row" data-commitment="${esc(c.id)}"><span>${esc(c.name)}</span><span>${formatRM(c.amount_sen)}</span></button>`
     : `<div class="list-row"><span>${esc(c.name)}</span><span>${formatRM(c.amount_sen)}</span></div>`)).join('');
-  return `<section><h2>Fixed commitments${h.commitments ? `<small>${formatRM(h.commitments)}</small>` : ''}</h2>
-    ${rows}${current ? `<button class="text-action" data-add-commitment>Add a commitment</button>` : ''}</section>`;
+  return `<section><details ${moneyOpen ? 'open' : ''} data-money><summary>Income and commitments</summary>
+    <button class="list-row" data-income><span>Income on the 27th</span><span>${h.income === null ? 'Add' : formatRM(h.income)}</span></button>
+    <div class="sub-head">Fixed commitments</div>
+    ${rows}${current ? '<button class="text-action" data-add-commitment>Add a commitment</button>' : ''}
+  </details></section>`;
+}
+
+const RECEIPT_PROMPT_MS = 30 * 60 * 1000;
+
+function receiptPrompt(t) {
+  if (!t || Date.now() - new Date(t.occurred_at).getTime() > RECEIPT_PROMPT_MS || store.get('kd-no-receipt') === t.id) return '';
+  return `<div class="receipt-card"><p>Add a receipt for ${formatRM(t.amount_sen)} at ${esc(t.merchant)}?</p>
+    <div><button data-receipt-take="${esc(t.id)}">Take photo</button><button data-receipt-skip="${esc(t.id)}">Skip</button></div></div>`;
 }
 
 function eveningCheck(today) {
@@ -227,34 +315,55 @@ const moreBlock = (h) => `<section><h2>More</h2>
 function renderHome() {
   const h = home;
   const isMonth = h.view === 'month';
-  const peak = Math.max(...h.days.map((d) => d.total), 1);
-  const nextStart = addDays(h.end, 1);
-  const label = `${shortDate(h.start)} to ${shortDate(h.end)}`;
+  const noun = isMonth ? 'pay period' : 'week';
   setOver(Boolean(h.todayBudget) && h.todayTotal > h.todayBudget);
   app.innerHTML = `
-    <header class="dayline">
-      <button class="step" data-shift="-1" aria-label="Previous ${isMonth ? 'pay period' : 'week'}">‹</button>
-      <h1>${label}</h1>
-      <button class="step" data-shift="1" aria-label="Next ${isMonth ? 'pay period' : 'week'}" ${nextStart > h.today ? 'disabled' : ''}>›</button>
-    </header>
-    <div class="range">
-      <button data-range="week" aria-pressed="${!isMonth}">Weekly</button>
-      <button data-range="month" aria-pressed="${isMonth}">Monthly</button>
-    </div>
-    ${bigTotal(h.total)}
-    <p class="verdict">${h.count ? `${h.count} ${h.count === 1 ? 'purchase' : 'purchases'}<span>${formatRM(h.average)} a day on average</span>` : 'Nothing logged in this period.'}</p>
-    ${budgetStrip(h.todayTotal, h.todayBudget, 'Today', h.today, h.todayBudgetSource)}
-    ${eveningCheck(h.today)}
-    ${isMonth ? incomeBlock(h) + commitmentsBlock(h) : ''}
-    <section><h2>${isMonth ? 'Day by day' : 'Each day'}${h.biggest ? `<small>Highest ${formatRM(h.biggest.total)}</small>` : ''}</h2>
-      <div class="week ${isMonth ? 'dense' : ''}" style="grid-template-columns:repeat(${h.days.length},1fr)">
-      ${h.days.map((d) => `<button class="day ${d.date === h.today ? 'on' : ''}" data-day="${d.date}" ${d.date > h.today ? 'disabled' : ''} aria-label="${shortDate(d.date)}, ${formatRM(d.total)}">
-        <i style="height:${Math.round((d.total / peak) * 92)}px"></i>${isMonth ? '' : `<span>${dayName(d.date, { weekday: 'narrow' })}</span>`}</button>`).join('')}
+    <header class="hero">
+      <div class="hero-top">
+        <div class="range">
+          <button data-range="week" aria-pressed="${!isMonth}">Weekly</button>
+          <button data-range="month" aria-pressed="${isMonth}">Monthly</button>
+        </div>
+        <div class="period">
+          <button class="step" data-shift="-1" aria-label="Previous ${noun}">‹</button>
+          <span>${shortDate(h.start)} to ${shortDate(h.end)}</span>
+          <button class="step" data-shift="1" aria-label="Next ${noun}" ${addDays(h.end, 1) > h.today ? 'disabled' : ''}>›</button>
+        </div>
       </div>
-      ${isMonth ? `<div class="axis"><span>${shortDate(h.start)}</span><span>${shortDate(h.end)}</span></div>` : ''}
-    </section>
-    ${h.count ? breakdown(h) : ''}
+      ${heroBody(h)}
+    </header>
+    <div class="tiles">
+      ${todayTile(h)}
+      <div class="tile"><span>Daily average</span><b>${formatRM(h.average)}</b><small>${(isMonth && compareLine(h, 'last pay period')) || `${h.count} ${h.count === 1 ? 'purchase' : 'purchases'}`}</small></div>
+    </div>
+    ${receiptPrompt(h.receiptCandidate)}
+    ${eveningCheck(h.today)}
+    ${calendar(h)}
+    ${h.count ? topSpending(h) : ''}
+    ${isMonth ? moneySetup(h) : ''}
     ${moreBlock(h)}
+    ${dock()}`;
+}
+
+const APPS = [
+  { mark: 'TNG', name: "Touch 'n Go eWallet", href: 'shortcuts://run-shortcut?name=Open%20TNG' },
+  { mark: 'SP', name: 'ShopeePay', href: 'shopeepaymy://' },
+  { mark: 'MAE', name: 'MAE by Maybank2u', href: 'shortcuts://run-shortcut?name=Open%20MAE' },
+];
+
+function renderLinks() {
+  app.innerHTML = `
+    <h1 class="links-title">Shortcuts</h1>
+    <p class="links-intro">Open an app to pay.</p>
+    <div class="link-list">
+      ${APPS.map((a) => `<a class="app-link" href="${a.href}"><span class="app-mark" aria-hidden="true">${a.mark}</span><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
+    </div>
+    <section><details><summary>Set up TNG and MAE</summary>
+      <p class="hint">These two apps need a small iPhone Shortcut to open from here. You only do this once.</p>
+      <ol class="steps"><li>In the Shortcuts app, create a shortcut with one action: Open App, then choose Touch 'n Go eWallet.</li>
+      <li>Name it exactly <strong>Open TNG</strong>.</li>
+      <li>Do the same for MAE and name it exactly <strong>Open MAE</strong>.</li></ol>
+    </details></section>
     ${dock()}`;
 }
 
@@ -273,7 +382,7 @@ function render() {
     ${bigTotal(s.total)}
     ${verdict(s)}
     ${date === today || s.budget ? budgetStrip(s.total, s.budget, date === today ? 'Today' : 'Budget', date, s.budgetSource) : ''}
-    ${date === today ? eveningCheck(today) : ''}
+    ${date === today ? receiptPrompt([...s.transactions].reverse().find((t) => t.source === 'shopeepay_qr' && !t.has_receipt)) + eveningCheck(today) : ''}
     ${ribbon(s)}
     ${showTip ? `<div class="tip"><span>Install this on your iPhone: in Safari, tap Share, then Add to Home Screen.</span><button data-tip>Dismiss</button></div>` : ''}
     ${s.count ? breakdown(s) : ''}
@@ -285,12 +394,68 @@ function render() {
     <section><h2>Purchases</h2>
       ${s.count ? [...s.transactions].reverse().map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
         <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
-        <small>${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}</small></button>`).join('')
+        <small>${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? ', receipt' : ''}</small></button>`).join('')
     : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
     </section>
     ${dock()}`;
   setOver(Boolean(s.budget) && s.total > s.budget);
 }
+
+let sheetPurchase = null;
+let receiptTarget = null;
+const receiptInput = document.getElementById('receipt-input');
+
+async function showReceiptArea(t, message = '') {
+  const area = document.getElementById('receipt-area');
+  if (!area) return;
+  const note = message ? `<p class="error">${esc(message)}</p>` : '';
+  if (!t.has_receipt) {
+    area.innerHTML = `<div class="row"><button type="button" data-receipt-take="${esc(t.id)}">Add receipt photo</button></div>${note}`;
+    return;
+  }
+  area.innerHTML = `<p class="hint">Loading receipt</p>${note}`;
+  try {
+    const src = await api.getReceipt(t.id);
+    if (document.getElementById('receipt-area') !== area) return;
+    area.innerHTML = `<img src="${src}" alt="Receipt photo"><div class="row"><button type="button" data-receipt-take="${esc(t.id)}">Replace photo</button><button type="button" data-receipt-remove="${esc(t.id)}">Remove photo</button></div>${note}`;
+  } catch (err) { area.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+}
+
+/** Shrinks a photo to a JPEG small enough to store, returned as base64. */
+async function compressPhoto(file) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 1400 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  for (const quality of [0.72, 0.55, 0.4]) {
+    const base64 = canvas.toDataURL('image/jpeg', quality).split(',')[1];
+    if (base64.length < 1400000) return base64;
+  }
+  throw new Error('That photo is too large to save.');
+}
+
+// The input lives outside the page content so returning from the camera can't remove it.
+receiptInput.addEventListener('change', async () => {
+  const file = receiptInput.files[0];
+  const id = receiptTarget;
+  receiptInput.value = '';
+  if (!file || !id) return;
+  const inSheet = sheet.open && sheetPurchase?.id === id;
+  try {
+    await api.setReceipt(id, await compressPhoto(file));
+    if (inSheet) { sheetPurchase.has_receipt = 1; showReceiptArea(sheetPurchase); } else refresh();
+  } catch (err) {
+    const message = err.message === 'unauthorized' ? '' : (err.message || 'The photo could not be saved.');
+    if (inSheet) showReceiptArea(sheetPurchase, message);
+    else if (message) {
+      const card = app.querySelector('.receipt-card');
+      if (card) card.insertAdjacentHTML('beforeend', `<p class="error">${esc(message)}</p>`);
+    }
+  }
+});
 
 const localParts = (iso) => {
   const d = new Date(new Date(iso).getTime() + 8 * 3600e3).toISOString();
@@ -310,9 +475,11 @@ function openSheet(t) {
     <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${(t?.category || 'Food') === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
     <div class="two"><label>Date<input name="date" type="date" required max="${today}" value="${when.date}"></label>
     <label>Time<input name="time" type="time" required value="${when.time}"></label></div>
+    ${t ? '<div id="receipt-area"></div>' : ''}
     <p class="error" hidden></p>
     <div class="actions">${t ? '<button type="button" class="quiet" data-del>Delete</button>' : '<button type="button" class="quiet" data-close>Cancel</button>'}
     <button class="primary">${t ? 'Save changes' : 'Add purchase'}</button></div></form>`;
+  if (t) { sheetPurchase = t; showReceiptArea(t); }
   const form = sheet.querySelector('form');
   const fail = (e) => { const p = form.querySelector('.error[hidden]'); if (p) { p.hidden = false; p.textContent = e.message; } };
   form.onsubmit = async (e) => {
@@ -405,7 +572,8 @@ async function downloadCsv() {
 async function refresh() {
   if (!DEMO && !store.get('kd-key')) return renderGate();
   try {
-    if (page === 'home') { home = await api.loadHome(range, homeDate); renderHome(); } else { summary = await api.load(date); render(); }
+    if (page === 'links') renderLinks();
+    else if (page === 'home') { home = await api.loadHome(range, homeDate); renderHome(); } else { summary = await api.load(date); render(); }
   } catch (e) {
     if (e.message !== 'unauthorized') app.innerHTML = `<div class="gate"><h1>KiraDuit</h1><p>Your spending could not be loaded. Check your connection, then try again.</p><button class="primary" data-retry>Try again</button></div>`;
   }
@@ -419,6 +587,8 @@ function nextTick(el, keyboard) {
   const at = group.indexOf(selected);
   return at === -1 ? group[0] : group[at + 1] ?? null;
 }
+
+app.addEventListener('toggle', (e) => { if (e.target.matches?.('[data-money]')) moneyOpen = e.target.open; }, true);
 
 app.addEventListener('click', (e) => {
   const el = e.target.closest('button');
@@ -435,6 +605,8 @@ app.addEventListener('click', (e) => {
   else if (d.tick) { selected = nextTick(el, e.detail === 0); render(); }
   else if (d.edit) openSheet(summary.transactions.find((t) => t.id === d.edit));
   else if (d.add !== undefined) openSheet(null);
+  else if (d.receiptTake) { receiptTarget = d.receiptTake; receiptInput.click(); }
+  else if (d.receiptSkip) { store.set('kd-no-receipt', d.receiptSkip); refresh(); }
   else if (d.checked) { store.set('kd-checked', d.checked); refresh(); }
   else if (d.defaultBudget !== undefined) openAmountSheet({ title: 'Default daily budget', label: 'Budget when you skip setting one (RM)', action: 'Save default', value: home.defaultBudget, optional: true, hint: 'Leave empty to use your can-spend-per-day amount.', save: (v) => api.setDefaultBudget(v) });
   else if (d.addCommitment !== undefined) openCommitmentAdd();
@@ -442,7 +614,16 @@ app.addEventListener('click', (e) => {
   else if (d.export !== undefined) downloadCsv();
   else if (d.tip !== undefined) { store.set('kd-tip', '1'); render(); }
 });
-sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.close(); });
+sheet.addEventListener('click', async (e) => {
+  if (e.target === sheet) return sheet.close();
+  const el = e.target.closest('button');
+  if (!el) return;
+  if (el.dataset.receiptTake) { receiptTarget = el.dataset.receiptTake; receiptInput.click(); }
+  else if (el.dataset.receiptRemove) {
+    try { await api.removeReceipt(el.dataset.receiptRemove); sheetPurchase.has_receipt = 0; showReceiptArea(sheetPurchase); } catch (err) { showReceiptArea(sheetPurchase, err.message); }
+  }
+});
+sheet.addEventListener('close', () => { if (page !== 'links') refresh(); });
 // Picks up new purchases when you return from ShopeePay.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !sheet.open) refresh(); });
 

@@ -44,3 +44,9 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS receipts (
+  transaction_id TEXT PRIMARY KEY,
+  image TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
