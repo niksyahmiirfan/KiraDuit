@@ -78,3 +78,14 @@ test('previous range compares the same stretch of time', () => {
   assert.deepEqual(previousRange('month', '2026-10-27', '2026-11-26', '2026-11-09'), { start: '2026-09-27', end: '2026-10-10' });
   assert.deepEqual(previousRange('week', '2026-11-02', '2026-11-08', '2026-11-11'), { start: '2026-10-26', end: '2026-11-01' });
 });
+test('reads a real ShopeePay QR receipt', () => {
+  const text = 'RM 5.50\nTotal\nRewards\nRMO.02\nPayment Details\nTo\n• QL MAXINCOME SDN BHD\nPayment Time\nYou Paid\n09 Nov 2026, 08:09PM\nRM5.50\nView More v\nRewards\n2 Coins (RMO.02)\nFrom Coins Bonanza\nShare\nA OK';
+  assert.deepEqual(parseReceipt(text), { amount_sen: 550, merchant: 'QL MAXINCOME SDN BHD', reference: null, confirmed: true });
+});
+test('rewards value is never taken as the payment, even when read correctly', () => {
+  assert.equal(parseReceipt('RM 5.50\nTotal Rewards\nRM0.02\nTo\nKedai Ali\nYou Paid').amount_sen, 550);
+});
+test('merchant label does not catch Total or other labels', () => {
+  assert.equal(parseReceipt('You Paid\nRM3.00\nTotal\nKedai').merchant, null);
+  assert.equal(parseReceipt('You Paid\nRM3.00\nTo\nPayment Time').merchant, null);
+});
