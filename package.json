@@ -1,0 +1,13 @@
+{
+  "name": "kiraduit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --d1 DB=local --port 8788",
+    "db:local": "wrangler d1 execute kiraduit --local -c wrangler.local.toml --file=schema.sql",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

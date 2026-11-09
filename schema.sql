@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS transactions (
+  id TEXT PRIMARY KEY,
+  amount_sen INTEGER NOT NULL CHECK (amount_sen > 0),
+  merchant TEXT NOT NULL,
+  category TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('shopeepay_qr', 'apple_pay', 'manual')),
+  card TEXT,
+  occurred_at TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  needs_review INTEGER NOT NULL DEFAULT 0,
+  reference TEXT,
+  raw_text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (local_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_reference
+  ON transactions (reference) WHERE reference IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS merchant_categories (
+  merchant_key TEXT PRIMARY KEY,
+  category TEXT NOT NULL
+);

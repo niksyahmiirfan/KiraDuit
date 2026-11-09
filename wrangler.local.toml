@@ -1,0 +1,7 @@
+# Used only by `npm run db:local`. Production settings live in the Cloudflare dashboard.
+name = "kiraduit"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kiraduit"
+database_id = "local"
