@@ -12,7 +12,8 @@ Everything is done in the Cloudflare dashboard. No command line is needed.
 2. **Create the site.** Go to Workers & Pages > Create > Pages > Connect to Git and pick this repository. Set the framework to None, leave the build command empty, and set the output directory to `public`.
 3. **Connect the database.** In Settings > Bindings, add a D1 database with variable name `DB` and choose `kiraduit`.
 4. **Set your access key.** In Settings > Variables and Secrets, add a Secret named `API_TOKEN` with a long random value. Save it in your password manager.
-5. **Redeploy.** In Deployments, open the latest one and choose Retry deployment.
+5. **Optional: switch on AI help.** In Settings > Bindings, add Workers AI with variable name `AI`. This enables Quick add, reading of receipts the app is unsure about, and better categories for unfamiliar shops. Without it, the app works as before.
+6. **Redeploy.** In Deployments, open the latest one and choose Retry deployment.
 
 Your address is `https://<project>.pages.dev`. Each push to `main` deploys automatically.
 
