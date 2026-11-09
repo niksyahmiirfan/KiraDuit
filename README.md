@@ -1,4 +1,4 @@
-# KiraDuit
+# KiraDuit 💰
 
 A personal daily spending tracker for iPhone. ShopeePay QR and Apple Pay payments feed one dashboard, which installs to your Home Screen like an app.
 
