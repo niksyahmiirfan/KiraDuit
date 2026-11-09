@@ -102,6 +102,7 @@ const api = DEMO ? {
     Object.assign(t, { merchant: f.merchant, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), needs_review: 0, local_date: f.date, occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString() });
   },
   remove: async (id) => demoTxs.splice(demoTxs.findIndex((x) => x.id === id), 1),
+  draft: async (text) => ({ skipped: 0, items: [...text.matchAll(/([^,\d]+?)\s*(\d+(?:\.\d{1,2})?)/g)].map((m) => ({ merchant: m[1].trim(), amount_sen: toSen(m[2]), category: 'Food' })) }),
   add: async (f) => demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }),
 } : {
   load: (d) => request(`/api/summary?date=${d}`),
@@ -121,6 +122,7 @@ const api = DEMO ? {
   update: (id, f) => request(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(f) }),
   remove: (id) => request(`/api/transactions/${id}`, { method: 'DELETE' }),
   add: (f) => request('/api/transactions', { method: 'POST', body: JSON.stringify(f) }),
+  draft: (text) => request('/api/draft', { method: 'POST', body: JSON.stringify({ text }) }),
 };
 
 /* ---- views ---- */
@@ -463,6 +465,9 @@ function openSheet(t) {
   const when = t ? localParts(t.occurred_at) : { date: defaultDate, time: defaultDate === today ? localParts(new Date().toISOString()).time : '12:00' };
   sheet.innerHTML = `<form method="dialog">
     <h2>${t ? 'Edit purchase' : 'Add purchase'}</h2>
+    ${t ? '' : `<div class="quick"><label>Quick add<textarea id="quick-note" rows="2" maxlength="500" placeholder="Nasi lemak 8.50, teh tarik 2.50"></textarea></label>
+    <p class="error" id="quick-error" hidden></p>
+    <button type="button" class="text-action" data-draft>Read this</button></div>`}
     ${fromReceipt ? '<p class="error">Check these details against your receipt.</p>' : ''}
     <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${t ? (t.amount_sen / 100).toFixed(2) : ''}"></label>
     <label>Where<input name="merchant" required value="${t ? esc(t.merchant) : ''}"></label>
@@ -487,10 +492,73 @@ function openSheet(t) {
     } catch (err) { fail(err); }
   };
   form.querySelector('[data-close]')?.addEventListener('click', () => sheet.close());
+  form.querySelector('[data-draft]')?.addEventListener('click', async (e) => {
+    const button = e.currentTarget;
+    const error = form.querySelector('#quick-error');
+    error.hidden = true;
+    button.disabled = true;
+    button.textContent = 'Reading…';
+    try {
+      openDraftSheet(await api.draft(form.querySelector('#quick-note').value), form.elements.date.value);
+    } catch (err) {
+      error.hidden = false;
+      error.textContent = err.message;
+      button.disabled = false;
+      button.textContent = 'Read this';
+    }
+  });
   form.querySelector('[data-del]')?.addEventListener('click', async () => {
     try { await api.remove(t.id); sheet.close(); refresh(); } catch (err) { fail(err); }
   });
   sheet.showModal();
+}
+
+// Nothing from Quick add is saved until it's confirmed here.
+function openDraftSheet({ items, skipped }, draftDate) {
+  const today = localDate();
+  const label = (n) => `Add ${n} purchase${n === 1 ? '' : 's'}`;
+  sheet.innerHTML = `<form method="dialog"><h2>Check these</h2>
+    ${skipped ? `<p class="hint">${skipped} item${skipped === 1 ? '' : 's'} had no clear price and ${skipped === 1 ? 'was' : 'were'} left out.</p>` : ''}
+    <div class="drafts">${items.map((d) => `<fieldset class="draft">
+      <div class="two"><label>Where<input name="merchant" required maxlength="120" value="${esc(d.merchant)}"></label>
+      <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${(d.amount_sen / 100).toFixed(2)}"></label></div>
+      <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${d.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <button type="button" class="text-action" data-draft-remove>Remove</button></fieldset>`).join('')}</div>
+    <label>Date<input name="date" type="date" required max="${today}" value="${draftDate}"></label>
+    <p class="error" hidden></p>
+    <div class="actions"><button type="button" class="quiet" data-close>Cancel</button><button class="primary">${label(items.length)}</button></div></form>`;
+  const form = sheet.querySelector('form');
+  const rows = () => [...form.querySelectorAll('.draft')];
+  const primary = form.querySelector('.primary');
+  form.querySelector('[data-close]').onclick = () => sheet.close();
+  form.querySelector('.drafts').addEventListener('click', (e) => {
+    if (!e.target.matches('[data-draft-remove]')) return;
+    e.target.closest('.draft').remove();
+    if (!rows().length) return sheet.close();
+    primary.textContent = label(rows().length);
+  });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const when = form.elements.date.value;
+    const time = when === today ? localParts(new Date().toISOString()).time : '12:00';
+    primary.disabled = true;
+    try {
+      // Saved rows leave the list, so retrying after an error can't add them twice.
+      for (const row of rows()) {
+        const value = (name) => row.querySelector(`[name="${name}"]`).value;
+        await api.add({ amount: value('amount'), merchant: value('merchant'), category: value('category'), date: when, time });
+        row.remove();
+      }
+      sheet.close();
+      if (page === 'day') { date = when; selected = null; }
+      refresh();
+    } catch (err) {
+      const p = form.querySelector('.error'); p.hidden = false; p.textContent = err.message;
+      primary.disabled = false;
+      primary.textContent = label(rows().length);
+    }
+  };
+  if (!sheet.open) sheet.showModal();
 }
 
 function openAmountSheet({ title, label, value, action, save, hint, optional }) {

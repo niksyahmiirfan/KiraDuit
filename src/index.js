@@ -1,4 +1,5 @@
 import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
+import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
 import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
@@ -17,10 +18,25 @@ async function authorized(request, env) {
   return crypto.subtle.timingSafeEqual(a, b);
 }
 
-async function categoryFor(env, merchant) {
-  const saved = await env.DB.prepare('SELECT category FROM merchant_categories WHERE merchant_key = ?')
-    .bind(merchantKey(merchant)).first();
-  return saved?.category || guessCategory(merchant);
+const PLACEHOLDER_MERCHANTS = new Set(['apple pay', 'shopeepay qr']);
+const UNFINISHED_PAYMENT = /pending|processing|failed|unsuccessful|gagal|menunggu/i;
+
+const saveCategory = (env, merchant, category) => env.DB.prepare(
+  `INSERT INTO merchant_categories (merchant_key, category) VALUES (?, ?)
+   ON CONFLICT (merchant_key) DO UPDATE SET category = excluded.category`,
+).bind(merchantKey(merchant), category).run();
+
+/** Your saved choice wins, then the keyword list, then a model guess that's saved for next time. */
+async function categoryFor(env, merchant, hint) {
+  const key = merchantKey(merchant);
+  const saved = await env.DB.prepare('SELECT category FROM merchant_categories WHERE merchant_key = ?').bind(key).first();
+  if (saved) return saved.category;
+  const guess = guessCategory(merchant);
+  if (guess !== 'Other' || PLACEHOLDER_MERCHANTS.has(key) || !aiEnabled(env)) return guess;
+  const suggested = hint || (await suggestCategory(env, merchant));
+  if (!suggested) return guess;
+  await saveCategory(env, merchant, suggested);
+  return suggested;
 }
 
 async function insert(env, t) {
@@ -54,6 +70,10 @@ async function isDuplicate(env, t) {
   return Boolean(hit);
 }
 
+const shopeeCandidate = (amount_sen, merchant, reference) => ({
+  amount_sen, source: 'shopeepay_qr', merchant: merchant || 'ShopeePay QR', reference: reference ?? null,
+});
+
 async function ingest(request, env) {
   const body = await request.json().catch(() => null);
   if (!body) return text('Could not read that request.', 400);
@@ -73,16 +93,26 @@ async function ingest(request, env) {
 
   if (body.source === 'shopeepay_qr') {
     const parsed = parseReceipt(body.text);
-    if (!parsed) return text('No payment found on this screen. Nothing was logged.', 422);
-    const candidate = {
-      amount_sen: parsed.amount_sen, source: 'shopeepay_qr',
-      merchant: parsed.merchant || 'ShopeePay QR', reference: parsed.reference,
-    };
-    if (await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(parsed.amount_sen)}`);
-    const unsure = !parsed.merchant || !parsed.confirmed;
+    if (parsed && await isDuplicate(env, shopeeCandidate(parsed.amount_sen, parsed.merchant, parsed.reference))) {
+      return text(`Already logged ${formatRM(parsed.amount_sen)}`);
+    }
+    const complete = parsed?.merchant && parsed.confirmed;
+    const rescue = complete ? null : await readReceipt(env, body.text);
+    const amount_sen = parsed?.amount_sen ?? (rescue?.paid ? rescue.amount_sen : null);
+    if (!amount_sen) return text('No payment found on this screen. Nothing was logged.', 422);
+
+    const merchant = parsed?.merchant || rescue?.merchant || null;
+    const candidate = shopeeCandidate(amount_sen, merchant, parsed?.reference);
+    if (!parsed && await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(amount_sen)}`);
+    if (parsed && merchant !== parsed.merchant && await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(amount_sen)}`);
+
+    // The model only clears a flag when it agrees with the parser's amount and nothing on screen says otherwise.
+    const rescued = parsed && merchant && rescue?.amount_sen === parsed.amount_sen
+      && (parsed.confirmed || rescue.paid) && !UNFINISHED_PAYMENT.test(body.text);
+    const unsure = !complete && !rescued;
     const row = await insert(env, {
       ...candidate, needs_review: unsure ? 1 : 0,
-      ...(parsed.merchant ? {} : { category: 'Other' }),
+      category: merchant ? await categoryFor(env, merchant, rescue?.category) : 'Other',
       // Screen text is only kept when it's needed to fix a misread.
       raw_text: unsure ? String(body.text).slice(0, 4000) : null,
     });
@@ -283,11 +313,17 @@ async function receiptRoute(request, env, id) {
   return text('Not found.', 404);
 }
 
-async function rememberCategory(env, merchant, category) {
-  await env.DB.prepare(
-    `INSERT INTO merchant_categories (merchant_key, category) VALUES (?, ?)
-     ON CONFLICT (merchant_key) DO UPDATE SET category = excluded.category`,
-  ).bind(merchantKey(merchant), category).run();
+const rememberCategory = saveCategory;
+
+async function draft(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const note = String(body.text ?? '').trim();
+  if (!note) return json({ error: 'Type what you bought and how much it was.' }, 422);
+  if (!aiEnabled(env)) return json({ error: "Quick add isn't switched on yet. Fill in the details below instead." }, 503);
+  const result = await draftPurchases(env, note);
+  if (!result) return json({ error: "Quick add isn't available right now. Fill in the details below instead." }, 503);
+  if (!result.items.length) return json({ error: "Couldn't find a purchase with a price. Try something like: nasi lemak 8.50." }, 422);
+  return json(result);
 }
 
 function cleanEdits(body) {
@@ -341,6 +377,7 @@ async function api(request, env, url) {
   const commitment = path.match(/^\/api\/commitments\/([\w-]+)$/);
   if (commitment && method === 'DELETE') return removeCommitment(env, commitment[1]);
 
+  if (path === '/api/draft' && method === 'POST') return draft(request, env);
   if (path === '/api/transactions' && method === 'POST') {
     const body = await request.json().catch(() => ({}));
     const { out, error } = cleanEdits({
