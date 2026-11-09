@@ -687,7 +687,33 @@ sheet.addEventListener('click', async (e) => {
 });
 sheet.addEventListener('close', () => { if (page !== 'links') refresh(); });
 // Picks up new purchases when you return from ShopeePay.
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !sheet.open) refresh(); });
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden || sheet.open) return;
+  if (await newVersionLive()) location.reload();
+  else refresh();
+});
 
-if (!DEMO && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// The Home Screen app can stay in memory for days, so check for a new deploy when it's reopened.
+let loadedVersion = null;
+async function liveVersion() {
+  try {
+    const res = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
+    return res.ok ? res.headers.get('etag') : null;
+  } catch { return null; }
+}
+async function newVersionLive() {
+  if (DEMO) return false;
+  const live = await liveVersion();
+  return Boolean(loadedVersion && live && live !== loadedVersion);
+}
+
+if (!DEMO) {
+  liveVersion().then((v) => { loadedVersion = v; });
+  if ('serviceWorker' in navigator) {
+    // A replaced service worker means an older app may be on screen. First installs have no controller and don't reload.
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !sheet.open) location.reload(); });
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+}
 refresh();
