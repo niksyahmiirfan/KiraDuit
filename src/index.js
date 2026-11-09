@@ -1,4 +1,4 @@
-import { parseMoney, parseReceipt, guessCategory, merchantKey } from './parse.js';
+import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
 import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
@@ -59,8 +59,8 @@ async function ingest(request, env) {
   if (!body) return text('Could not read that request.', 400);
 
   if (body.source === 'apple_pay') {
-    const amount_sen = parseMoney(body.amount);
-    if (!amount_sen) return text(`Could not read the amount "${body.amount ?? ''}".`, 422);
+    const amount_sen = parseWalletAmount(body.amount);
+    if (!amount_sen) return text(`Could not read the amount "${body.amount ?? ''}". Nothing was logged.`, 422);
     const foreign = /[A-Z$€£¥]/i.test(String(body.amount)) && !/RM|MYR/i.test(String(body.amount));
     const merchant = String(body.merchant || body.name || '').trim();
     const row = await insert(env, {

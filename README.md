@@ -48,6 +48,8 @@ In Shortcuts > Automation > New Automation, choose **Wallet** (called **Transact
 
 - **Get Contents of URL**: `https://YOUR-ADDRESS/api/ingest`, with `source` = `apple_pay`, `amount` = Shortcut Input > Amount, `merchant` = Shortcut Input > Merchant, `card` = Shortcut Input > Card
 
+   To fill these in, insert **Shortcut Input**, tap it, and choose the matching property from its list. Don't type "> Amount" as text.
+
 This runs on in-store taps. In-app or online Apple Pay purchases may need adding by hand.
 
 ### Receipt photos (optional)

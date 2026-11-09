@@ -260,3 +260,9 @@ details[open] > summary::after { content: '\2212'; }
 #receipt-area .error { margin-top: 4px; }
 
 [hidden] { display: none !important; }
+
+/* iPhone centres date and time values and sits them high; match the other fields. */
+.two label { min-width: 0; }
+.two input { line-height: 46px; text-align: left; }
+.two input::-webkit-date-and-time-value { display: block; margin: 0; min-height: 46px; line-height: 46px; text-align: left; }
+.two input::-webkit-datetime-edit { padding: 0; line-height: 46px; }

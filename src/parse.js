@@ -1,6 +1,7 @@
-const EXCLUDED = /balance|baki|saved|discount|diskaun|voucher|coin|cashback|rebate|promo/i;
+const EXCLUDED = /balance|baki|saved|discount|diskaun|voucher|coin|cashback|rebate|promo|reward/i;
 const TOTAL_LABEL = /total|amount|jumlah|paid|dibayar/i;
-const MERCHANT_LABEL = /^(?:merchant(?: name)?|paid to|pay to|payee|recipient|penerima|peniaga|dibayar kepada)\s*[:\-]?\s*(.*)$/i;
+const MERCHANT_LABEL = /^(?:merchant(?: name)?|paid to|pay to|payee|recipient|penerima|peniaga|dibayar kepada|to)\b\s*[:\-]?\s*(.*)$/i;
+const NOT_A_MERCHANT = /^(?:payment|you paid|total|view more|transaction|order)\b/i;
 const REFERENCE_LABEL = /^(?:transaction (?:id|no\.?|number)|order (?:id|no\.?)|reference(?: no\.?| number)?|ref(?:\.| no\.?)|no\.? rujukan|id transaksi)\s*[:\-]?\s*(.*)$/i;
 const SUCCESS = /success|successful|berjaya|completed|payment made|paid/i;
 const MONEY = /(?:RM|MYR)\s*-?\s*(\d[\d,]*(?:\.\d{1,2})?)/i;
@@ -17,6 +18,14 @@ export function parseMoney(value) {
   const [whole, cents = ''] = s.split('.');
   const sen = Number(whole) * 100 + Number(cents.padEnd(2, '0'));
   return sen > 0 ? sen : null;
+}
+
+/** Wallet amounts must be just a number with an optional currency, so stray text can't become a price. */
+export function parseWalletAmount(value) {
+  if (typeof value === 'number') return parseMoney(value);
+  const text = String(value ?? '').trim();
+  if (!/^(?:[A-Z]{2,3}|[$€£¥])?\s*\d[\d.,]*\s*(?:[A-Z]{2,3})?$/i.test(text)) return null;
+  return parseMoney(text);
 }
 
 const labelled = (lines, pattern) => {
@@ -43,7 +52,8 @@ export function parseReceipt(text) {
   const chosen = candidates.find((c) => c.labelled) || candidates[0];
   if (!chosen) return null;
 
-  const merchant = labelled(lines, MERCHANT_LABEL);
+  const named = labelled(lines, MERCHANT_LABEL)?.replace(/^[•·*\s-]+/, '').trim();
+  const merchant = named && !NOT_A_MERCHANT.test(named) ? named : null;
   const reference = labelled(lines, REFERENCE_LABEL);
   return {
     amount_sen: chosen.sen,
