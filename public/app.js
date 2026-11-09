@@ -358,12 +358,6 @@ function renderLinks() {
     <div class="link-list">
       ${APPS.map((a) => `<a class="app-link" href="${a.href}"><span class="app-mark" aria-hidden="true">${a.mark}</span><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
     </div>
-    <section><details><summary>Set up TNG and MAE</summary>
-      <p class="hint">These two apps need a small iPhone Shortcut to open from here. You only do this once.</p>
-      <ol class="steps"><li>In the Shortcuts app, create a shortcut with one action: Open App, then choose Touch 'n Go eWallet.</li>
-      <li>Name it exactly <strong>Open TNG</strong>.</li>
-      <li>Do the same for MAE and name it exactly <strong>Open MAE</strong>.</li></ol>
-    </details></section>
     ${dock()}`;
 }
 
