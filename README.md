@@ -47,12 +47,28 @@ In Shortcuts > Automation > New Automation, choose **Wallet** (called **Transact
 
 Wallet automations run on in-store taps. Pay-in-app or online Apple Pay purchases may need adding by hand.
 
-## 5. Get a daily report
+## 5. Set up your daily reminders
 
-In Shortcuts > Automation > New Automation, choose **Time of Day** (for example 9:30 pm), then **Run Immediately**:
+Both are in Shortcuts > Automation > New Automation > **Time of Day**. Choose **Daily** and **Run Immediately**.
+
+**8:00 am: ask for today's budget**
+
+1. **Ask for Input**: type Number, prompt "Today's budget?"
+2. **Get Contents of URL**
+   - URL: `https://YOUR-ADDRESS/api/budget`
+   - Method: POST
+   - Header: `Authorization` = `Bearer YOUR-ACCESS-KEY`
+   - Request Body: JSON, with `amount` = Provided Input
+3. **Show Notification** (body: Contents of URL)
+
+**10:30 pm: today's summary**
 
 1. **Get Contents of URL**: `https://YOUR-ADDRESS/api/report`, method GET, same `Authorization` header
 2. **Show Notification** (body: Contents of URL)
+
+You can also set or change today's budget in the app. The screen turns reddish once today's spending passes it. If you skip the 8 am prompt, KiraDuit uses your default budget, or your can-spend-per-day amount if you haven't set one.
+
+Every logged payment shows a "Logged" notification. If you don't see one, the payment wasn't saved, so add it by hand.
 
 ## Good to know
 

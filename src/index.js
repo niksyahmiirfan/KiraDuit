@@ -1,5 +1,5 @@
 import { parseMoney, parseReceipt, guessCategory, merchantKey } from './parse.js';
-import { CATEGORIES, formatRM, localDate, reportText, summarize, weekDates, windowStart } from '../public/summary.js';
+import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -91,13 +91,134 @@ async function ingest(request, env) {
   return text('Unknown payment source.', 400);
 }
 
+const getIncome = async (env, periodStart) =>
+  (await env.DB.prepare('SELECT amount_sen FROM income WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1').bind(periodStart).first())?.amount_sen ?? null;
+
+const getCommitments = async (env, periodStart) =>
+  (await env.DB.prepare(
+    'SELECT id, name, amount_sen FROM commitments WHERE effective_from <= ? AND (ended_from IS NULL OR ended_from > ?) ORDER BY amount_sen DESC',
+  ).bind(periodStart, periodStart).all()).results;
+
+const sumOf = (rows) => rows.reduce((a, r) => a + r.amount_sen, 0);
+
+const getDefaultBudget = async (env) => {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'default_budget_sen'").first();
+  return row ? Number(row.value) : null;
+};
+
+/** A day's budget: the one you set, else (today only) your default, else your daily allowance. */
+async function budgetFor(env, date) {
+  const set = await env.DB.prepare('SELECT amount_sen FROM budgets WHERE local_date = ?').bind(date).first();
+  if (set) return { amount: set.amount_sen, source: 'set' };
+  if (date !== localDate()) return { amount: null, source: null };
+  const fallback = await getDefaultBudget(env);
+  if (fallback) return { amount: fallback, source: 'default' };
+  const { start } = payPeriod(date);
+  const [income, commitments, spent] = await Promise.all([
+    getIncome(env, start),
+    getCommitments(env, start),
+    env.DB.prepare('SELECT COALESCE(SUM(amount_sen), 0) AS total FROM transactions WHERE local_date >= ? AND local_date < ?').bind(start, date).first(),
+  ]);
+  const amount = allowanceFor({ income, commitments: sumOf(commitments), spentBefore: spent.total, today: date });
+  return { amount, source: amount ? 'allowance' : null };
+}
+
 async function loadSummary(env, date) {
   const end = [...weekDates(date), date].sort().at(-1);
-  const { results } = await env.DB.prepare(
-    `SELECT id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review
-     FROM transactions WHERE local_date BETWEEN ? AND ?`,
-  ).bind(windowStart(date), end).all();
-  return summarize(results, date);
+  const [{ results }, budget] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review
+       FROM transactions WHERE local_date BETWEEN ? AND ?`,
+    ).bind(windowStart(date), end).all(),
+    budgetFor(env, date),
+  ]);
+  return summarize(results, date, budget.amount, budget.source);
+}
+
+async function loadHome(env, view, date) {
+  const today = localDate();
+  const { start, end } = periodFor(view, date);
+  const period = payPeriod(date).start;
+  const [{ results }, income, commitments, spentToday, budget, defaultBudget] = await Promise.all([
+    env.DB.prepare('SELECT amount_sen, category, source, local_date FROM transactions WHERE local_date BETWEEN ? AND ?').bind(start, end).all(),
+    getIncome(env, period),
+    getCommitments(env, period),
+    env.DB.prepare('SELECT COALESCE(SUM(amount_sen), 0) AS total FROM transactions WHERE local_date = ?').bind(today).first(),
+    budgetFor(env, today),
+    getDefaultBudget(env),
+  ]);
+  return {
+    ...summarizePeriod(results, { view, start, end, today, income, commitments: sumOf(commitments) }),
+    commitmentList: commitments,
+    todayTotal: spentToday.total,
+    todayBudget: budget.amount,
+    todayBudgetSource: budget.source,
+    defaultBudget,
+  };
+}
+
+async function setBudget(request, env, date) {
+  const body = await request.json().catch(() => ({}));
+  const amount_sen = parseMoney(body.amount);
+  if (!amount_sen) return text('Enter a budget above RM0.', 422);
+  await env.DB.prepare(
+    `INSERT INTO budgets (local_date, amount_sen) VALUES (?, ?)
+     ON CONFLICT (local_date) DO UPDATE SET amount_sen = excluded.amount_sen`,
+  ).bind(date, amount_sen).run();
+  const { total } = await loadSummary(env, date);
+  return text(budgetLine(total, amount_sen));
+}
+
+async function setIncome(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const amount_sen = parseMoney(body.amount);
+  if (!amount_sen) return text('Enter an income above RM0.', 422);
+  await env.DB.prepare(
+    `INSERT INTO income (effective_from, amount_sen) VALUES (?, ?)
+     ON CONFLICT (effective_from) DO UPDATE SET amount_sen = excluded.amount_sen`,
+  ).bind(payPeriod(localDate()).start, amount_sen).run();
+  return text(`Income set to ${formatRM(amount_sen)}`);
+}
+
+async function setDefaultBudget(request, env) {
+  const body = await request.json().catch(() => ({}));
+  if (body.amount === '' || body.amount === null || body.amount === undefined) {
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'default_budget_sen'").run();
+    return text('Default budget cleared');
+  }
+  const amount_sen = parseMoney(body.amount);
+  if (!amount_sen) return text('Enter a budget above RM0, or leave it empty.', 422);
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES ('default_budget_sen', ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+  ).bind(String(amount_sen)).run();
+  return text(`Default budget set to ${formatRM(amount_sen)}`);
+}
+
+async function addCommitment(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const name = String(body.name ?? '').trim().slice(0, 80);
+  const amount_sen = parseMoney(body.amount);
+  if (!name) return json({ error: 'Enter a name.' }, 422);
+  if (!amount_sen) return json({ error: 'Enter an amount above RM0.' }, 422);
+  await env.DB.prepare('INSERT INTO commitments (id, name, amount_sen, effective_from) VALUES (?,?,?,?)')
+    .bind(crypto.randomUUID(), name, amount_sen, payPeriod(localDate()).start).run();
+  return json({ ok: true }, 201);
+}
+
+// Past pay periods keep a commitment that has since ended.
+async function removeCommitment(env, id) {
+  const current = payPeriod(localDate()).start;
+  await env.DB.prepare('DELETE FROM commitments WHERE id = ? AND effective_from >= ?').bind(id, current).run();
+  await env.DB.prepare('UPDATE commitments SET ended_from = ? WHERE id = ? AND ended_from IS NULL').bind(current, id).run();
+  return json({ ok: true });
+}
+
+async function exportCsv(env) {
+  const { results } = await env.DB.prepare('SELECT amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review FROM transactions').all();
+  return new Response(toCsv(results), {
+    headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="kiraduit.csv"', 'cache-control': 'no-store' },
+  });
 }
 
 async function rememberCategory(env, merchant, category) {
@@ -117,6 +238,15 @@ function cleanEdits(body) {
     out.merchant = String(body.merchant).trim().slice(0, 120);
     if (!out.merchant) return { error: 'Enter where you paid.' };
   }
+  if (body.date !== undefined || body.time !== undefined) {
+    const { date, time } = body;
+    const valid = isDate(date) && /^([01]\d|2[0-3]):[0-5]\d$/.test(time || '')
+      && new Date(`${date}T00:00:00Z`).toISOString().startsWith(date);
+    if (!valid) return { error: 'Enter a valid date and time.' };
+    if (date > localDate()) return { error: 'Choose today or an earlier date.' };
+    out.local_date = date;
+    out.occurred_at = new Date(`${date}T${time}:00+08:00`).toISOString();
+  }
   if (body.category !== undefined) {
     if (!CATEGORIES.includes(body.category)) return { error: 'Choose a listed category.' };
     out.category = body.category;
@@ -133,16 +263,31 @@ async function api(request, env, url) {
 
   if (path === '/api/ingest' && method === 'POST') return ingest(request, env);
   if (path === '/api/summary' && method === 'GET') return json(await loadSummary(env, date));
-  if (path === '/api/report' && method === 'GET') return text(reportText(await loadSummary(env, date)));
+  if (path === '/api/home' && method === 'GET') {
+    const view = url.searchParams.get('view') === 'month' ? 'month' : 'week';
+    return json(await loadHome(env, view, date));
+  }
+  if (path === '/api/budget' && method === 'POST') return setBudget(request, env, date);
+  if (path === '/api/income' && method === 'POST') return setIncome(request, env);
+  if (path === '/api/report' && method === 'GET') {
+    const report = reportText(await loadSummary(env, date));
+    return text(date === localDate() ? `${report} Anything missing? Open KiraDuit to add it.` : report);
+  }
+  if (path === '/api/default-budget' && method === 'POST') return setDefaultBudget(request, env);
+  if (path === '/api/export' && method === 'GET') return exportCsv(env);
+  if (path === '/api/commitments' && method === 'POST') return addCommitment(request, env);
+  const commitment = path.match(/^\/api\/commitments\/([\w-]+)$/);
+  if (commitment && method === 'DELETE') return removeCommitment(env, commitment[1]);
 
   if (path === '/api/transactions' && method === 'POST') {
     const body = await request.json().catch(() => ({}));
-    const { out, error } = cleanEdits({ amount: body.amount ?? '', merchant: body.merchant ?? '', ...(body.category ? { category: body.category } : {}) });
+    const { out, error } = cleanEdits({
+      amount: body.amount ?? '', merchant: body.merchant ?? '',
+      ...(body.category ? { category: body.category } : {}),
+      ...(body.date ? { date: body.date, time: body.time } : {}),
+    });
     if (error) return json({ error }, 422);
-    if (body.date && !isDate(body.date)) return json({ error: 'Choose a valid date.' }, 422);
-    // Adding to a past day files it at noon on that day; today uses the current time.
-    const occurred_at = body.date && body.date !== localDate() ? `${body.date}T12:00:00+08:00` : undefined;
-    const row = await insert(env, { ...out, source: 'manual', occurred_at });
+    const row = await insert(env, { ...out, source: 'manual' });
     if (out.category) await rememberCategory(env, out.merchant, out.category);
     return json(row, 201);
   }

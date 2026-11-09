@@ -19,3 +19,28 @@ CREATE TABLE IF NOT EXISTS merchant_categories (
   merchant_key TEXT PRIMARY KEY,
   category TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS budgets (
+  local_date TEXT PRIMARY KEY,
+  amount_sen INTEGER NOT NULL CHECK (amount_sen > 0)
+);
+
+-- Each row applies from that pay period onwards, until a newer row replaces it.
+CREATE TABLE IF NOT EXISTS income (
+  effective_from TEXT PRIMARY KEY,
+  amount_sen INTEGER NOT NULL CHECK (amount_sen > 0)
+);
+
+-- A commitment counts from effective_from until the pay period starting ended_from.
+CREATE TABLE IF NOT EXISTS commitments (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  amount_sen INTEGER NOT NULL CHECK (amount_sen > 0),
+  effective_from TEXT NOT NULL,
+  ended_from TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
