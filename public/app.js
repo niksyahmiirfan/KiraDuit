@@ -346,9 +346,9 @@ function renderHome() {
 }
 
 const APPS = [
-  { mark: 'TNG', name: "Touch 'n Go eWallet", href: 'shortcuts://run-shortcut?name=Open%20TNG' },
-  { mark: 'SP', name: 'ShopeePay', href: 'shopeepaymy://' },
-  { mark: 'MAE', name: 'MAE by Maybank2u', href: 'shortcuts://run-shortcut?name=Open%20MAE' },
+  { logo: 'tng', name: "Touch 'n Go eWallet", href: 'shortcuts://run-shortcut?name=Open%20TNG' },
+  { logo: 'spay', name: 'ShopeePay', href: 'shopeepaymy://' },
+  { logo: 'mae', name: 'MAE by Maybank2u', href: 'shortcuts://run-shortcut?name=Open%20MAE' },
 ];
 
 function renderLinks() {
@@ -356,14 +356,8 @@ function renderLinks() {
     <h1 class="links-title">Shortcuts</h1>
     <p class="links-intro">Open an app to pay.</p>
     <div class="link-list">
-      ${APPS.map((a) => `<a class="app-link" href="${a.href}"><span class="app-mark" aria-hidden="true">${a.mark}</span><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
+      ${APPS.map((a) => `<a class="app-link" href="${a.href}"><img class="app-mark" src="/icons/app-${a.logo}.png" alt="" width="52" height="52"><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
     </div>
-    <section><details><summary>Set up TNG and MAE</summary>
-      <p class="hint">These two apps need a small iPhone Shortcut to open from here. You only do this once.</p>
-      <ol class="steps"><li>In the Shortcuts app, create a shortcut with one action: Open App, then choose Touch 'n Go eWallet.</li>
-      <li>Name it exactly <strong>Open TNG</strong>.</li>
-      <li>Do the same for MAE and name it exactly <strong>Open MAE</strong>.</li></ol>
-    </details></section>
     ${dock()}`;
 }
 

@@ -241,11 +241,9 @@ details[open] > summary::after { content: '\2212'; }
 .links-intro { margin-top: 4px; color: var(--soft); }
 .link-list { display: grid; gap: 10px; margin-top: 24px; }
 .app-link { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 16px; background: var(--raised); color: var(--ink); text-decoration: none; }
-.app-mark { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 13px; background: var(--ink); color: var(--paper); font-weight: 600; font-size: 15px; }
+.app-mark { flex: none; display: block; width: 52px; height: 52px; border-radius: 13px; }
 .app-link b { display: block; font-weight: 500; font-size: 19px; }
 .app-link span span { color: var(--soft); font-size: 15px; }
-.steps { margin: 8px 0 0; padding-left: 20px; color: var(--soft); font-size: 15px; }
-.steps li { margin-top: 6px; }
 
 /* Receipts */
 .receipt-card { margin-top: 16px; padding: 14px 16px; background: var(--raised); border-radius: 12px; }
