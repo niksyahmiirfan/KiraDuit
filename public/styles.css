@@ -139,7 +139,9 @@ input, select { display: block; width: 100%; height: 48px; margin-top: 4px; padd
 .split-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; margin-top: 16px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; text-align: left; font-weight: 500; }
 .split-row span:last-child { margin-left: auto; color: var(--soft); font-weight: 400; }
 .split-row svg { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.split-note { color: var(--flag); }
+.split-mark { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; vertical-align: -3px; font-variant-numeric: tabular-nums; }
+.split-mark.owed { color: var(--flag); }
+.split-mark svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .add-friend { display: flex; gap: 10px; margin-top: 16px; }
 .add-friend input { flex: 1; min-width: 0; margin-top: 0; }
 .add-friend button { min-width: 72px; min-height: 48px; border-radius: 24px; background: var(--ink); color: var(--paper); font-weight: 500; }

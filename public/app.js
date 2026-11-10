@@ -273,6 +273,7 @@ const ICONS = {
   trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
   signout: '<path d="M14 4H6v16h8"/><path d="M10 12h10M16 8l4 4-4 4"/>',
   split: '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5M14.5 14.6c2.6-.6 5 .8 5.8 4.4"/>',
+  settled: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><path d="M15 11.5l2 2 4-4.5"/>',
   receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -506,7 +507,9 @@ function purchaseList(s) {
   const shown = all.slice(first, first + BUYS_PER_PAGE);
   const rows = shown.map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
         <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
-        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.bill_sen ? `, <span class="split-note">${t.owed_sen ? `${formatRM(t.owed_sen)} owed` : 'split, settled'}</span>` : ''}${t.has_receipt ? `<span class="receipt-mark" role="img" aria-label="Receipt attached" title="Receipt attached">${icon('receipt')}</span>` : ''}</small></button>`).join('');
+        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.bill_sen ? (t.owed_sen
+          ? `<span class="split-mark owed" role="img" aria-label="Split, ${formatRM(t.owed_sen)} owed to you" title="Split, ${formatRM(t.owed_sen)} owed">${icon('split')}${formatRM(t.owed_sen)}</span>`
+          : `<span class="split-mark" role="img" aria-label="Split, everyone has paid" title="Split, everyone has paid">${icon('settled')}</span>`) : ''}${t.has_receipt ? `<span class="receipt-mark" role="img" aria-label="Receipt attached" title="Receipt attached">${icon('receipt')}</span>` : ''}</small></button>`).join('');
   if (pages < 2) return rows;
   return `${rows}<nav class="pager" aria-label="Purchase pages">
     <button data-buy-page="-1" aria-label="Newer purchases" ${buyPage === 0 ? 'disabled' : ''}>‹</button>
