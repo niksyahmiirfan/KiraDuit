@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseMoney, parseReceipt, parseWalletAmount, guessCategory } from '../src/parse.js';
-import { previousRange, allowanceFor, toCsv, summarize, summarizePeriod, payPeriod, weekDates, reportText } from '../public/summary.js';
+import { previousRange, allowanceFor, toCsv, summarize, summarizePeriod, payPeriod, weekDates } from '../public/summary.js';
 
 test('parseMoney handles Wallet and receipt formats', () => {
   assert.equal(parseMoney('RM12.50'), 1250);
@@ -32,12 +32,11 @@ test('week starts on Monday', () => {
   assert.equal(weekDates('2026-11-09')[0], '2026-11-09');
   assert.equal(weekDates('2026-11-15')[0], '2026-11-09');
 });
-test('summarize totals, usual and report', () => {
+test('summarize totals and usual', () => {
   const t = (local_date, amount_sen, category = 'Food', source = 'shopeepay_qr') => ({ id: local_date + amount_sen, local_date, amount_sen, category, source, merchant: 'X', needs_review: 0, occurred_at: `${local_date}T04:00:00Z` });
   const s = summarize([t('2026-11-09', 1000), t('2026-11-09', 500, 'Transport', 'apple_pay'), t('2026-11-08', 2000), t('2026-11-07', 2000), t('2026-11-06', 2000)], '2026-11-09');
   assert.equal(s.total, 1500); assert.equal(s.usual, 2000); assert.equal(s.count, 2);
   assert.equal(s.monthTotal, 7500);
-  assert.equal(reportText(s), 'RM15.00 across 2 purchases. RM5.00 below your usual day. Top: Food RM10.00, Transport RM5.00.');
 });
 test('pay period runs 27th to 26th across month and year ends', () => {
   assert.deepEqual(payPeriod('2026-11-09'), { start: '2026-10-27', end: '2026-11-26' });
@@ -53,11 +52,6 @@ test('month summary works out money left and daily allowance', () => {
   assert.equal(h.total, 102000); assert.equal(h.left, 298000);
   assert.equal(h.nextPayday, '2026-11-27'); assert.equal(h.daysToPayday, 18);
   assert.equal(h.dailyAllowance, 16555); assert.equal(h.days.length, 31); assert.equal(h.average, Math.round(102000 / 14));
-});
-test('report states budget result', () => {
-  const t = { id: 'a', local_date: '2026-11-09', amount_sen: 7000, category: 'Food', source: 'manual', merchant: 'X', needs_review: 0, occurred_at: '2026-11-09T04:00:00Z' };
-  assert.equal(reportText(summarize([t], '2026-11-09', 6000)), 'RM70.00 across 1 purchase. RM10.00 over your RM60.00 budget. Top: Food RM70.00.');
-  assert.equal(reportText(summarize([t], '2026-11-09', 9000)), 'RM70.00 across 1 purchase. RM20.00 left of your RM90.00 budget. Top: Food RM70.00.');
 });
 test('commitments reduce money left and the allowance', () => {
   const h = summarizePeriod([{ local_date: '2026-11-09', amount_sen: 10000, category: 'Food', source: 'manual' }], { view: 'month', start: '2026-10-27', end: '2026-11-26', today: '2026-11-09', income: 400000, commitments: 150000 });

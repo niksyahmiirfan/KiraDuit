@@ -81,19 +81,6 @@ export function budgetLine(total, budget) {
     : `${formatRM(-diff)} over your ${formatRM(budget)} budget`;
 }
 
-export function reportText(s) {
-  if (!s.count) return s.budget ? `Nothing logged today. Your budget was ${formatRM(s.budget)}.` : 'Nothing logged today.';
-  const lines = [`${formatRM(s.total)} across ${s.count} ${s.count === 1 ? 'purchase' : 'purchases'}.`];
-  if (s.budget) lines.push(`${budgetLine(s.total, s.budget)}.`);
-  else if (s.usual !== null) {
-    const diff = s.total - s.usual;
-    lines.push(diff === 0 ? 'Right on your usual day.' : `${formatRM(Math.abs(diff))} ${diff < 0 ? 'below' : 'above'} your usual day.`);
-  }
-  lines.push(`Top: ${s.byCategory.slice(0, 2).map((c) => `${c.name} ${formatRM(c.total)}`).join(', ')}.`);
-  if (s.needsReview) lines.push(`${s.needsReview} to check.`);
-  return lines.join(' ');
-}
-
 export const PAY_DAY = 27;
 
 /** The pay period containing a date: the 27th through the 26th of the next month. */
