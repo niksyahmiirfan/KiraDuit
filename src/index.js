@@ -87,11 +87,43 @@ const shopeeCandidate = (amount_sen, merchant, reference) => ({
   amount_sen, source: 'shopeepay_qr', merchant: merchant || 'ShopeePay QR', reference: reference ?? null,
 });
 
+const REFUND_TYPE = /refund|return|revers|void|cancel|credit/i;
+const REFUND_WINDOW_DAYS = 30;
+const MINUS = /^\s*[-\u2212(]/;
+
+const isRefund = (body) => REFUND_TYPE.test(String(body.type ?? '')) || MINUS.test(String(body.amount ?? ''))
+  || (typeof body.amount === 'number' && body.amount < 0);
+
+/** A refunded Apple Pay purchase wasn't spending, so the matching logged purchase is removed. */
+async function applyRefund(env, body) {
+  const raw = typeof body.amount === 'number' ? Math.abs(body.amount) : String(body.amount ?? '').replace(/[-\u2212()]/g, '');
+  const amount_sen = parseWalletAmount(raw);
+  if (!amount_sen) return text(`Could not read the refund amount "${body.amount ?? ''}". Nothing changed.`, 422);
+  const merchant = String(body.merchant || body.name || '').trim();
+  const since = new Date(Date.now() - REFUND_WINDOW_DAYS * 86400000).toISOString();
+  const { results } = await env.DB.prepare(
+    `SELECT id, merchant FROM transactions WHERE source = 'apple_pay' AND amount_sen = ? AND occurred_at >= ?
+     ORDER BY occurred_at DESC`,
+  ).bind(amount_sen, since).all();
+  const match = results.find((t) => merchant && merchantKey(t.merchant) === merchantKey(merchant));
+  if (!match) {
+    return text(`Refund of ${formatRM(amount_sen)}${merchant ? ` at ${merchant}` : ''} didn't match a logged purchase. Nothing changed.`);
+  }
+  await deleteTransaction(env, match.id);
+  return text(`Refund: removed ${formatRM(amount_sen)} at ${match.merchant}`);
+}
+
+const deleteTransaction = (env, id) => env.DB.batch([
+  env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(id),
+  env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(id),
+]);
+
 async function ingest(request, env) {
   const body = await request.json().catch(() => null);
   if (!body) return text('Could not read that request.', 400);
 
   if (body.source === 'apple_pay') {
+    if (isRefund(body)) return applyRefund(env, body);
     const amount_sen = parseWalletAmount(body.amount);
     if (!amount_sen) return text(`Could not read the amount "${body.amount ?? ''}". Nothing was logged.`, 422);
     const foreign = /[A-Z$€£¥]/i.test(String(body.amount)) && !/RM|MYR/i.test(String(body.amount));
@@ -432,10 +464,7 @@ async function api(request, env, url) {
 
   const match = path.match(/^\/api\/transactions\/([\w-]+)$/);
   if (match && method === 'DELETE') {
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(match[1]),
-      env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(match[1]),
-    ]);
+    await deleteTransaction(env, match[1]);
     return json({ ok: true });
   }
   if (match && method === 'PATCH') {
