@@ -19,7 +19,7 @@ function fakeD1() {
     all: async () => ({ results: db.prepare(sql).all(...args) }),
     run: async () => db.prepare(sql).run(...args),
   });
-  return { prepare: (sql) => statement(sql), raw: db };
+  return { prepare: (sql) => statement(sql), batch: async (list) => { for (const st of list) await st.run(); }, raw: db };
 }
 
 function setup(reply) {
@@ -226,4 +226,40 @@ test('ingest also accepts the item directly', async () => {
   const { post, rows } = setup();
   await post('/api/ingest', { source: 'apple_pay', amount: 'RM1.50', merchant: 'Mamak XYZ', item: 'Teh Ais' });
   assert.equal(rows()[0].item, 'Teh Ais');
+});
+
+test('an Apple Pay refund removes the matching purchase', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell, Rawang, Selangor' });
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Petronas' });
+  const res = await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell, Rawang, Selangor', type: 'Refund' });
+  assert.equal(await res.text(), 'Refund: removed RM50.00 at Shell, Rawang, Selangor');
+  assert.deepEqual(rows().map((r) => r.merchant), ['Petronas']);
+});
+
+test('a negative amount is treated as a refund', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell' });
+  await post('/api/ingest', { source: 'apple_pay', amount: '-MYR 50.00', merchant: 'Shell' });
+  assert.equal(rows().length, 0);
+  await post('/api/ingest', { source: 'apple_pay', amount: 12, merchant: 'Shell' });
+  await post('/api/ingest', { source: 'apple_pay', amount: -12, merchant: 'Shell' });
+  assert.equal(rows().length, 0);
+});
+
+test('an unmatched refund changes nothing', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell' });
+  const res = await post('/api/ingest', { source: 'apple_pay', amount: '-MYR 20.00', merchant: 'Shell' });
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /didn't match/);
+  assert.equal(rows().length, 1);
+});
+
+test('a refund named in the Name field is recognised, but a credit card name is not', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell', name: 'RHB Credit Card' });
+  assert.equal(rows().length, 1);
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell', name: 'Refund' });
+  assert.equal(rows().length, 0);
 });
