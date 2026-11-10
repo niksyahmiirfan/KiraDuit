@@ -1,4 +1,5 @@
 import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
+import { authenticate, login, logout } from './auth.js';
 import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
 import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
@@ -21,14 +22,6 @@ async function ensureSchema(env) {
     });
   }
   schemaReady = true;
-}
-
-async function authorized(request, env) {
-  if (!env.API_TOKEN) return false;
-  const given = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
-  const hash = (s) => crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  const [a, b] = await Promise.all([hash(given), hash(env.API_TOKEN)]);
-  return crypto.subtle.timingSafeEqual(a, b);
 }
 
 const PLACEHOLDER_MERCHANTS = new Set(['apple pay', 'shopeepay qr']);
@@ -422,10 +415,21 @@ function cleanEdits(body) {
 }
 
 async function api(request, env, url) {
-  if (!(await authorized(request, env))) return text('Invalid access key.', 401);
-  await ensureSchema(env);
   const path = url.pathname.replace(/\/$/, '');
   const method = request.method;
+  const secure = url.protocol === 'https:';
+
+  // These two run before the access check: one trades the key for a session, the other ends it.
+  if (path === '/api/login' && method === 'POST') return login(request, env, secure);
+  if (path === '/api/logout' && method === 'POST') return logout(secure);
+
+  const auth = await authenticate(request, env);
+  if (!auth.ok) {
+    const res = text(auth.message, auth.status);
+    if (auth.retryAfter) res.headers.set('retry-after', String(auth.retryAfter));
+    return res;
+  }
+  await ensureSchema(env);
   const date = url.searchParams.get('date') || localDate();
   if (!isDate(date)) return text('Use a date like 2026-11-09.', 400);
 
@@ -486,4 +490,14 @@ async function api(request, env, url) {
   return text('Not found.', 404);
 }
 
-export const handleApi = (request, env) => api(request, env, new URL(request.url));
+// _headers only covers static files, so API responses get their own.
+export async function handleApi(request, env) {
+  const original = await api(request, env, new URL(request.url));
+  const res = new Response(original.body, original); // copy so the headers can be changed
+  res.headers.set('x-content-type-options', 'nosniff');
+  res.headers.set('referrer-policy', 'no-referrer');
+  res.headers.set('cross-origin-resource-policy', 'same-origin');
+  res.headers.set('x-frame-options', 'DENY');
+  return res;
+}
+

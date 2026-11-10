@@ -51,3 +51,10 @@ CREATE TABLE IF NOT EXISTS receipts (
   image TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Wrong access keys per client (a hash of the address), used to slow down guessing.
+CREATE TABLE IF NOT EXISTS auth_failures (
+  client TEXT PRIMARY KEY,
+  count INTEGER NOT NULL,
+  window_start INTEGER NOT NULL
+);

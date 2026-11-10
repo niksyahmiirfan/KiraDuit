@@ -21,7 +21,7 @@ To run locally: `npm install`, `npm run db:local`, put `API_TOKEN=anything` in `
 
 ## 2. Install on iPhone
 
-Open your address in Safari, tap Share, then Add to Home Screen. Open KiraDuit from the new icon and enter your access key.
+Open your address in Safari, tap Share, then Add to Home Screen. Open KiraDuit from the new icon and enter your access key. You stay signed in for 30 days. To sign out sooner, tap **Sign out** on the home screen.
 
 ## 3. Log payments
 
@@ -117,4 +117,7 @@ If you skip the 8 am prompt, KiraDuit uses your default budget, or your can-spen
 ## Tips
 
 - Screen text is stored only for receipts marked to check, and is deleted once you save them.
-- Your access key is the only lock on your data. If it leaks, set a new `API_TOKEN` secret in Cloudflare, redeploy, and update your shortcuts.
+- Your access key is the only lock on your data. If it leaks, set a new `API_TOKEN` secret in Cloudflare, redeploy, and update your shortcuts. This also signs out every browser.
+- The app keeps you signed in with a private cookie that scripts on the page cannot read, not with your access key. Your shortcuts still send the key.
+- After 5 wrong keys, that device is blocked for 15 minutes. For extra protection, add a Cloudflare rate limiting rule for `/api/*` (Security > WAF > Rate limiting rules).
+- Updating from an older version: run `schema.sql` in the D1 Console again. It only adds the new `auth_failures` table and leaves your data alone. Until you do, the 5-attempt limit stays off.
