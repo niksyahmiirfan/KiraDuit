@@ -1,7 +1,8 @@
 import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
 import { authenticate, login, logout } from './auth.js';
+import { cleanShares, groupOwed, splitHint, usualFood } from '../public/split.js';
 import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
-import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
+import { CATEGORIES, addDays, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -11,10 +12,18 @@ const text = (body, status = 200) =>
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
 
-// Databases created before the item field existed get the column added once, on first use.
+const SPLIT_TABLES = [
+  `CREATE TABLE IF NOT EXISTS splits (transaction_id TEXT PRIMARY KEY, bill_sen INTEGER NOT NULL CHECK (bill_sen > 0), created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS split_shares (id TEXT PRIMARY KEY, transaction_id TEXT NOT NULL, friend TEXT NOT NULL,
+     amount_sen INTEGER NOT NULL CHECK (amount_sen > 0), paid_at TEXT)`,
+  'CREATE INDEX IF NOT EXISTS idx_split_shares_transaction ON split_shares (transaction_id)',
+];
+
+// Databases created before newer features get their columns and tables added once, on first use.
 let schemaReady = false;
 async function ensureSchema(env) {
   if (schemaReady) return;
+  await env.DB.batch(SPLIT_TABLES.map((sql) => env.DB.prepare(sql)));
   const { results } = await env.DB.prepare('PRAGMA table_info(transactions)').all();
   if (!results.some((c) => c.name === 'item')) {
     await env.DB.prepare('ALTER TABLE transactions ADD COLUMN item TEXT').run().catch((e) => {
@@ -99,8 +108,9 @@ async function applyRefund(env, body) {
   const merchant = String(body.merchant || body.name || '').trim();
   const since = new Date(Date.now() - REFUND_WINDOW_DAYS * 86400000).toISOString();
   const { results } = await env.DB.prepare(
-    `SELECT id, merchant FROM transactions WHERE source = 'apple_pay' AND amount_sen = ? AND occurred_at >= ?
-     ORDER BY occurred_at DESC`,
+    `SELECT t.id, t.merchant FROM transactions t LEFT JOIN splits s ON s.transaction_id = t.id
+     WHERE t.source = 'apple_pay' AND COALESCE(s.bill_sen, t.amount_sen) = ? AND t.occurred_at >= ?
+     ORDER BY t.occurred_at DESC`,
   ).bind(amount_sen, since).all();
   const match = results.find((t) => merchant && merchantKey(t.merchant) === merchantKey(merchant));
   if (!match) {
@@ -112,6 +122,8 @@ async function applyRefund(env, body) {
 
 const deleteTransaction = (env, id) => env.DB.batch([
   env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(id),
+  env.DB.prepare('DELETE FROM split_shares WHERE transaction_id = ?').bind(id),
+  env.DB.prepare('DELETE FROM splits WHERE transaction_id = ?').bind(id),
   env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(id),
 ]);
 
@@ -197,14 +209,22 @@ async function budgetFor(env, date) {
 
 async function loadSummary(env, date) {
   const end = [...weekDates(date), date].sort().at(-1);
-  const [{ results }, budget] = await Promise.all([
+  const [{ results }, budget, food] = await Promise.all([
     env.DB.prepare(
       `SELECT id, amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review,
-         EXISTS (SELECT 1 FROM receipts WHERE transaction_id = transactions.id) AS has_receipt
+         EXISTS (SELECT 1 FROM receipts WHERE transaction_id = transactions.id) AS has_receipt,
+         (SELECT bill_sen FROM splits WHERE transaction_id = transactions.id) AS bill_sen,
+         (SELECT COALESCE(SUM(amount_sen), 0) FROM split_shares WHERE transaction_id = transactions.id AND paid_at IS NULL) AS owed_sen
        FROM transactions WHERE local_date BETWEEN ? AND ?`,
     ).bind(windowStart(date), end).all(),
     budgetFor(env, date),
+    env.DB.prepare(
+      `SELECT amount_sen FROM transactions WHERE category = 'Food' AND local_date >= ?
+       AND id NOT IN (SELECT transaction_id FROM splits)`,
+    ).bind(addDays(date, -90)).all(),
   ]);
+  const usual = usualFood(food.results.map((r) => r.amount_sen));
+  for (const t of results) t.split_hint = splitHint(t, usual);
   return summarize(results, date, budget.amount, budget.source);
 }
 
@@ -213,7 +233,7 @@ async function loadHome(env, view, date) {
   const { start, end } = periodFor(view, date);
   const period = payPeriod(date).start;
   const previous = previousRange(view, start, end, today);
-  const [{ results }, income, commitments, spentToday, budget, defaultBudget, previousSpend, latestQr] = await Promise.all([
+  const [{ results }, income, commitments, spentToday, budget, defaultBudget, previousSpend, latestQr, owed] = await Promise.all([
     env.DB.prepare('SELECT amount_sen, category, source, local_date FROM transactions WHERE local_date BETWEEN ? AND ?').bind(start, end).all(),
     getIncome(env, period),
     getCommitments(env, period),
@@ -226,8 +246,14 @@ async function loadHome(env, view, date) {
        WHERE source = 'shopeepay_qr' AND local_date = ? AND id NOT IN (SELECT transaction_id FROM receipts)
        ORDER BY occurred_at DESC LIMIT 1`,
     ).bind(today).first(),
+    env.DB.prepare(
+      `SELECT MAX(friend) AS name, SUM(amount_sen) AS owed_sen, COUNT(*) AS bills FROM split_shares
+       WHERE paid_at IS NULL GROUP BY LOWER(friend) ORDER BY owed_sen DESC, name`,
+    ).all(),
   ]);
   return {
+    owedList: owed.results,
+    owedTotal: sumOf(owed.results.map((r) => ({ amount_sen: r.owed_sen }))),
     ...summarizePeriod(results, { view, start, end, today, income, commitments: sumOf(commitments) }),
     commitmentList: commitments,
     previousTotal: previousSpend.total,
@@ -297,7 +323,10 @@ async function removeCommitment(env, id) {
 }
 
 async function exportCsv(env) {
-  const { results } = await env.DB.prepare('SELECT amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review FROM transactions').all();
+  const { results } = await env.DB.prepare(
+    `SELECT amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review,
+       (SELECT bill_sen FROM splits WHERE transaction_id = transactions.id) AS bill_sen FROM transactions`,
+  ).all();
   return new Response(toCsv(results), {
     headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="kiraduit.csv"', 'cache-control': 'no-store' },
   });
@@ -387,6 +416,66 @@ async function draft(request, env) {
   return json(result);
 }
 
+async function getSplit(env, id) {
+  const tx = await env.DB.prepare('SELECT amount_sen FROM transactions WHERE id = ?').bind(id).first();
+  if (!tx) return json({ error: 'That purchase no longer exists.' }, 404);
+  const [split, shares, recent] = await Promise.all([
+    env.DB.prepare('SELECT bill_sen FROM splits WHERE transaction_id = ?').bind(id).first(),
+    env.DB.prepare('SELECT id, friend, amount_sen, paid_at FROM split_shares WHERE transaction_id = ? ORDER BY rowid').bind(id).all(),
+    env.DB.prepare('SELECT MAX(friend) AS name FROM split_shares GROUP BY LOWER(friend) ORDER BY MAX(rowid) DESC LIMIT 20').all(),
+  ]);
+  return json({
+    bill_sen: split?.bill_sen ?? tx.amount_sen,
+    mine_sen: tx.amount_sen,
+    shares: shares.results.map((s) => ({ id: s.id, friend: s.friend, amount_sen: s.amount_sen, paid: Boolean(s.paid_at) })),
+    recent: recent.results.map((r) => r.name),
+  });
+}
+
+/** Saves who owes what for a purchase. Your share becomes the purchase amount, so only it counts as spending. */
+async function saveSplit(request, env, id) {
+  const body = await request.json().catch(() => ({}));
+  const tx = await env.DB.prepare('SELECT amount_sen FROM transactions WHERE id = ?').bind(id).first();
+  if (!tx) return json({ error: 'That purchase no longer exists.' }, 404);
+  const split = await env.DB.prepare('SELECT bill_sen FROM splits WHERE transaction_id = ?').bind(id).first();
+  const bill_sen = split?.bill_sen ?? tx.amount_sen;
+  const { shares, mine, error } = cleanShares(bill_sen, body.shares);
+  if (error) return json({ error }, 422);
+  // A friend who already paid stays paid when the split is edited.
+  const { results: before } = await env.DB.prepare('SELECT friend, paid_at FROM split_shares WHERE transaction_id = ?').bind(id).all();
+  const paid = new Map(before.filter((s) => s.paid_at).map((s) => [s.friend.toLowerCase(), s.paid_at]));
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO splits (transaction_id, bill_sen, created_at) VALUES (?, ?, ?)
+       ON CONFLICT (transaction_id) DO UPDATE SET bill_sen = excluded.bill_sen`,
+    ).bind(id, bill_sen, new Date().toISOString()),
+    env.DB.prepare('DELETE FROM split_shares WHERE transaction_id = ?').bind(id),
+    ...shares.map((s) => env.DB.prepare('INSERT INTO split_shares (id, transaction_id, friend, amount_sen, paid_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(crypto.randomUUID(), id, s.friend, s.amount_sen, paid.get(s.friend.toLowerCase()) ?? null)),
+    env.DB.prepare('UPDATE transactions SET amount_sen = ? WHERE id = ?').bind(mine, id),
+  ]);
+  return json({ ok: true, mine_sen: mine });
+}
+
+async function removeSplit(env, id) {
+  const split = await env.DB.prepare('SELECT bill_sen FROM splits WHERE transaction_id = ?').bind(id).first();
+  if (!split) return json({ ok: true });
+  await env.DB.batch([
+    env.DB.prepare('UPDATE transactions SET amount_sen = ? WHERE id = ?').bind(split.bill_sen, id),
+    env.DB.prepare('DELETE FROM split_shares WHERE transaction_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM splits WHERE transaction_id = ?').bind(id),
+  ]);
+  return json({ ok: true });
+}
+
+async function loadOwed(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT s.id, s.friend, s.amount_sen, t.id AS transaction_id, t.merchant, t.item, t.local_date FROM split_shares s
+     JOIN transactions t ON t.id = s.transaction_id WHERE s.paid_at IS NULL ORDER BY t.occurred_at DESC`,
+  ).all();
+  return json({ friends: groupOwed(results) });
+}
+
 function cleanEdits(body) {
   const out = {};
   if (body.amount !== undefined) {
@@ -465,6 +554,18 @@ async function api(request, env, url) {
     return json(row, 201);
   }
 
+  if (path === '/api/owed' && method === 'GET') return loadOwed(env);
+  const share = path.match(/^\/api\/shares\/([\w-]+)$/);
+  if (share && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const res = await env.DB.prepare('UPDATE split_shares SET paid_at = ? WHERE id = ?')
+      .bind(body.paid === false ? null : new Date().toISOString(), share[1]).run();
+    return res.meta?.changes === 0 ? json({ error: 'That share no longer exists.' }, 404) : json({ ok: true });
+  }
+  const splitPath = path.match(/^\/api\/transactions\/([\w-]+)\/split$/);
+  if (splitPath && method === 'GET') return getSplit(env, splitPath[1]);
+  if (splitPath && method === 'PUT') return saveSplit(request, env, splitPath[1]);
+  if (splitPath && method === 'DELETE') return removeSplit(env, splitPath[1]);
   if (path === '/api/transactions/latest/item' && method === 'POST') return saveLatestItem(request, env);
   if (path === '/api/receipts/latest' && method === 'POST') return saveLatestReceipt(request, env);
   const receipt = path.match(/^\/api\/transactions\/([\w-]+)\/receipt$/);
@@ -485,6 +586,13 @@ async function api(request, env, url) {
       `UPDATE transactions SET ${keys.map((k) => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}needs_review = 0, raw_text = NULL WHERE id = ?`,
     ).bind(...keys.map((k) => out[k]), match[1]).run();
     if (out.category) await rememberCategory(env, out.merchant || current.merchant, out.category);
+    // On a split purchase the amount is your share, so the bill total follows it.
+    if (out.amount_sen) {
+      await env.DB.prepare(
+        `UPDATE splits SET bill_sen = ? + (SELECT COALESCE(SUM(amount_sen), 0) FROM split_shares WHERE transaction_id = ?)
+         WHERE transaction_id = ?`,
+      ).bind(out.amount_sen, match[1], match[1]).run();
+    }
     return json({ ok: true });
   }
   return text('Not found.', 404);

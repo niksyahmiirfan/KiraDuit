@@ -52,6 +52,23 @@ CREATE TABLE IF NOT EXISTS receipts (
   created_at TEXT NOT NULL
 );
 
+-- A split purchase keeps your share in transactions.amount_sen and the whole bill here.
+CREATE TABLE IF NOT EXISTS splits (
+  transaction_id TEXT PRIMARY KEY,
+  bill_sen INTEGER NOT NULL CHECK (bill_sen > 0),
+  created_at TEXT NOT NULL
+);
+
+-- What each friend owes for a split purchase. paid_at is set once they pay you back.
+CREATE TABLE IF NOT EXISTS split_shares (
+  id TEXT PRIMARY KEY,
+  transaction_id TEXT NOT NULL,
+  friend TEXT NOT NULL,
+  amount_sen INTEGER NOT NULL CHECK (amount_sen > 0),
+  paid_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_split_shares_transaction ON split_shares (transaction_id);
+
 -- Wrong access keys per client (a hash of the address), used to slow down guessing.
 CREATE TABLE IF NOT EXISTS auth_failures (
   client TEXT PRIMARY KEY,
