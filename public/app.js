@@ -227,6 +227,9 @@ const ICONS = {
   day: '<rect x="4" y="5.5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/><path d="M8 14h3v3H8z"/>',
   links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
+  signout: '<path d="M14 4H6v16h8"/><path d="M10 12h10M16 8l4 4-4 4"/>',
   receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -337,8 +340,19 @@ function eveningCheck(today) {
 
 const moreBlock = (h) => `<section><h2>More</h2>
   <button class="list-row" data-default-budget><span>Default daily budget</span><span>${h.defaultBudget ? formatRM(h.defaultBudget) : 'Can spend per day'}</span></button>
-  ${DEMO ? '' : '<button class="list-row" data-export><span>Download my spending</span><span>CSV</span></button><button class="list-row" data-signout><span>Sign out</span><span></span></button>'}
-  <p class="error" id="more-error" hidden></p></section>`;
+  ${DEMO ? '' : '<button class="list-row" data-export><span>Download my spending</span><span>CSV</span></button>'}
+  <p class="error" id="more-error" hidden></p>
+  ${DEMO ? '' : `<button class="sign-out" data-signout>${icon('signout')}<span>Sign out</span></button>`}</section>`;
+
+function openSignOut() {
+  sheet.innerHTML = `<form method="dialog"><h2>Sign out?</h2>
+    <p class="hint">You'll need your access key to sign back in. Your Shortcuts keep logging payments either way.</p>
+    <div class="actions"><button type="button" class="quiet" data-close>Stay signed in</button><button class="primary">Sign out</button></div></form>`;
+  const form = sheet.querySelector('form');
+  form.querySelector('[data-close]').onclick = () => sheet.close();
+  form.onsubmit = (e) => { e.preventDefault(); sheet.close(); signOut(); };
+  sheet.showModal();
+}
 
 function renderHome() {
   const h = home;
@@ -454,7 +468,7 @@ async function showReceiptArea(t, message = '') {
   try {
     const src = await api.getReceipt(t.id);
     if (document.getElementById('receipt-area') !== area) return;
-    area.innerHTML = `<img src="${src}" alt="Receipt photo"><div class="row"><button type="button" data-receipt-take="${esc(t.id)}">Replace photo</button><button type="button" data-receipt-remove="${esc(t.id)}">Remove photo</button></div>${note}`;
+    area.innerHTML = `<img src="${src}" alt="Receipt photo"><div class="photo-actions"><button type="button" data-receipt-take="${esc(t.id)}">${icon('camera')}<span>Replace</span></button><button type="button" class="remove" data-receipt-remove="${esc(t.id)}">${icon('trash')}<span>Remove</span></button></div>${note}`;
   } catch (err) { area.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 }
 
@@ -722,7 +736,7 @@ app.addEventListener('click', (e) => {
   else if (d.addCommitment !== undefined) openCommitmentAdd();
   else if (d.commitment) openCommitmentRemove(home.commitmentList.find((c) => c.id === d.commitment));
   else if (d.export !== undefined) downloadCsv();
-  else if (d.signout !== undefined) signOut();
+  else if (d.signout !== undefined) openSignOut();
   else if (d.tip !== undefined) { store.set('kd-tip', '1'); render(); }
 });
 sheet.addEventListener('click', async (e) => {
@@ -731,6 +745,13 @@ sheet.addEventListener('click', async (e) => {
   if (!el) return;
   if (el.dataset.receiptTake) { receiptTarget = el.dataset.receiptTake; receiptInput.click(); }
   else if (el.dataset.receiptRemove) {
+    // Removing needs a second tap within a few seconds, since it can't be undone.
+    if (!el.classList.contains('confirm')) {
+      el.classList.add('confirm');
+      el.querySelector('span').textContent = 'Tap to confirm';
+      setTimeout(() => { if (el.isConnected) { el.classList.remove('confirm'); el.querySelector('span').textContent = 'Remove'; } }, 4000);
+      return;
+    }
     try { await api.removeReceipt(el.dataset.receiptRemove); sheetPurchase.has_receipt = 0; showReceiptArea(sheetPurchase); } catch (err) { showReceiptArea(sheetPurchase, err.message); }
   }
 });
