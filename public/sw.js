@@ -1,4 +1,4 @@
-const CACHE = 'kiraduit-v5';
+const CACHE = 'kiraduit-v6';
 const SHELL = ['/', '/styles.css', '/app.js', '/summary.js', '/manifest.webmanifest', '/fonts/familjen.woff2', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

@@ -65,9 +65,16 @@ function demoBudget(d) {
 
 const toSen = (v) => Math.round(parseFloat(v) * 100);
 
+let signedIn = false;
+const jsonHeaders = { 'content-type': 'application/json', 'x-requested-with': 'kiraduit' };
+
 async function request(path, options = {}) {
-  const res = await fetch(path, { ...options, headers: { authorization: `Bearer ${store.get('kd-key')}`, 'content-type': 'application/json' } });
-  if (res.status === 401) { store.del('kd-key'); renderGate('That access key was not accepted.'); throw new Error('unauthorized'); }
+  const res = await fetch(path, { ...options, headers: jsonHeaders });
+  if (res.status === 401) {
+    renderGate(signedIn ? 'Your session ended. Enter your access key to continue.' : '');
+    signedIn = false;
+    throw new Error('unauthorized');
+  }
   const body = await res.text();
   let parsed = null;
   try { parsed = JSON.parse(body); } catch { /* plain text reply */ }
@@ -109,7 +116,7 @@ const api = DEMO ? {
   setBudget: (d, amount) => request(`/api/budget?date=${d}`, { method: 'POST', body: JSON.stringify({ amount }) }),
   setIncome: (amount) => request('/api/income', { method: 'POST', body: JSON.stringify({ amount }) }),
   getReceipt: async (id) => {
-    const res = await fetch(`/api/transactions/${id}/receipt`, { headers: { authorization: `Bearer ${store.get('kd-key')}` } });
+    const res = await fetch(`/api/transactions/${id}/receipt`);
     if (!res.ok) throw new Error('The receipt photo could not be loaded.');
     return URL.createObjectURL(await res.blob());
   },
@@ -128,11 +135,23 @@ function renderGate(message = '') {
   app.innerHTML = `<form class="gate"><h1>KiraDuit</h1><p>Enter your access key to see your spending.</p>
     <label>Access key<input name="key" type="password" autocomplete="current-password" required></label>
     ${message ? `<p class="error">${esc(message)}</p>` : ''}<button class="primary">Unlock</button></form>`;
-  app.querySelector('form').onsubmit = (e) => {
+  app.querySelector('form').onsubmit = async (e) => {
     e.preventDefault();
-    store.set('kd-key', new FormData(e.target).get('key').trim());
-    refresh();
+    const button = e.target.querySelector('button');
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/login', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ key: new FormData(e.target).get('key') }) });
+      if (res.ok) { signedIn = true; return refresh(); }
+      const body = await res.json().catch(() => ({}));
+      renderGate(body.error || 'That access key was not accepted.');
+    } catch { renderGate('Could not reach KiraDuit. Check your connection and try again.'); }
   };
+}
+
+async function signOut() {
+  await fetch('/api/logout', { method: 'POST', headers: jsonHeaders }).catch(() => {});
+  signedIn = false;
+  renderGate();
 }
 
 function verdict(s) {
@@ -309,7 +328,7 @@ function eveningCheck(today) {
 
 const moreBlock = (h) => `<section><h2>More</h2>
   <button class="list-row" data-default-budget><span>Default daily budget</span><span>${h.defaultBudget ? formatRM(h.defaultBudget) : 'Can spend per day'}</span></button>
-  ${DEMO ? '' : '<button class="list-row" data-export><span>Download my spending</span><span>CSV</span></button>'}
+  ${DEMO ? '' : '<button class="list-row" data-export><span>Download my spending</span><span>CSV</span></button><button class="list-row" data-signout><span>Sign out</span><span></span></button>'}
   <p class="error" id="more-error" hidden></p></section>`;
 
 function renderHome() {
@@ -553,7 +572,7 @@ function openCommitmentRemove(c) {
 async function downloadCsv() {
   const fail = () => { const p = document.getElementById('more-error'); if (p) { p.hidden = false; p.textContent = 'Your spending could not be downloaded. Check your connection and try again.'; } };
   try {
-    const res = await fetch('/api/export', { headers: { authorization: `Bearer ${store.get('kd-key')}` } });
+    const res = await fetch('/api/export');
     if (!res.ok) return fail();
     const file = new File([await res.blob()], `kiraduit-${localDate()}.csv`, { type: 'text/csv' });
     // The share sheet is the dependable way to save a file from a Home Screen app on iPhone.
@@ -570,10 +589,9 @@ async function downloadCsv() {
 }
 
 async function refresh() {
-  if (!DEMO && !store.get('kd-key')) return renderGate();
   try {
     if (page === 'links') renderLinks();
-    else if (page === 'home') { home = await api.loadHome(range, homeDate); renderHome(); } else { summary = await api.load(date); render(); }
+    else if (page === 'home') { home = await api.loadHome(range, homeDate); signedIn = true; renderHome(); } else { summary = await api.load(date); signedIn = true; render(); }
   } catch (e) {
     if (e.message !== 'unauthorized') app.innerHTML = `<div class="gate"><h1>KiraDuit</h1><p>Your spending could not be loaded. Check your connection, then try again.</p><button class="primary" data-retry>Try again</button></div>`;
   }
@@ -612,6 +630,7 @@ app.addEventListener('click', (e) => {
   else if (d.addCommitment !== undefined) openCommitmentAdd();
   else if (d.commitment) openCommitmentRemove(home.commitmentList.find((c) => c.id === d.commitment));
   else if (d.export !== undefined) downloadCsv();
+  else if (d.signout !== undefined) signOut();
   else if (d.tip !== undefined) { store.set('kd-tip', '1'); render(); }
 });
 sheet.addEventListener('click', async (e) => {
@@ -628,4 +647,14 @@ sheet.addEventListener('close', () => { if (page !== 'links') refresh(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !sheet.open) refresh(); });
 
 if (!DEMO && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-refresh();
+
+// Earlier versions kept the access key in this browser. Trade it for a session once, then delete it.
+async function start() {
+  const legacy = DEMO ? null : store.get('kd-key');
+  if (legacy) {
+    await fetch('/api/login', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ key: legacy }) }).catch(() => {});
+    store.del('kd-key');
+  }
+  refresh();
+}
+start();
