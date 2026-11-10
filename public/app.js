@@ -268,6 +268,7 @@ const ICONS = {
   day: '<rect x="4" y="5.5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/><path d="M8 14h3v3H8z"/>',
   links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
+  photo: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M20 16l-5-5-7 8"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
@@ -390,7 +391,7 @@ const RECEIPT_PROMPT_MS = 30 * 60 * 1000;
 function receiptPrompt(t) {
   if (!t || Date.now() - new Date(t.occurred_at).getTime() > RECEIPT_PROMPT_MS || store.get('kd-no-receipt') === t.id) return '';
   return `<div class="receipt-card"><p>Add a receipt for ${esc(spentAt(t))}?</p>
-    <div><button data-receipt-take="${esc(t.id)}">Take photo</button><button data-receipt-skip="${esc(t.id)}">Skip</button></div></div>`;
+    <div><button data-receipt-take="${esc(t.id)}">Take photo</button><button data-receipt-pick="${esc(t.id)}">Upload</button><button data-receipt-skip="${esc(t.id)}">Skip</button></div></div>`;
 }
 
 function eveningCheck(today) {
@@ -520,20 +521,23 @@ function purchaseList(s) {
 let sheetPurchase = null;
 let receiptTarget = null;
 const receiptInput = document.getElementById('receipt-input');
+const receiptLibrary = document.getElementById('receipt-library');
+const photoButtons = (id, cameraLabel) => `<button type="button" data-receipt-take="${esc(id)}">${icon('camera')}<span>${cameraLabel}</span></button>
+  <button type="button" data-receipt-pick="${esc(id)}">${icon('photo')}<span>Upload</span></button>`;
 
 async function showReceiptArea(t, message = '') {
   const area = document.getElementById('receipt-area');
   if (!area) return;
   const note = message ? `<p class="error">${esc(message)}</p>` : '';
   if (!t.has_receipt) {
-    area.innerHTML = `<div class="row"><button type="button" data-receipt-take="${esc(t.id)}">Add receipt photo</button></div>${note}`;
+    area.innerHTML = `<p class="photo-label">Receipt photo</p><div class="photo-actions">${photoButtons(t.id, 'Take photo')}</div>${note}`;
     return;
   }
   area.innerHTML = `<p class="hint">Loading receipt</p>${note}`;
   try {
     const src = await api.getReceipt(t.id);
     if (document.getElementById('receipt-area') !== area) return;
-    area.innerHTML = `<img src="${src}" alt="Receipt photo"><div class="photo-actions"><button type="button" data-receipt-take="${esc(t.id)}">${icon('camera')}<span>Replace</span></button><button type="button" class="remove" data-receipt-remove="${esc(t.id)}">${icon('trash')}<span>Remove</span></button></div>${note}`;
+    area.innerHTML = `<img src="${src}" alt="Receipt photo"><div class="photo-actions">${photoButtons(t.id, 'Retake')}<button type="button" class="remove" data-receipt-remove="${esc(t.id)}">${icon('trash')}<span>Remove</span></button></div>${note}`;
   } catch (err) { area.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 }
 
@@ -554,10 +558,10 @@ async function compressPhoto(file) {
 }
 
 // The input lives outside the page content so returning from the camera can't remove it.
-receiptInput.addEventListener('change', async () => {
-  const file = receiptInput.files[0];
+async function savePhoto(input) {
+  const file = input.files[0];
   const id = receiptTarget;
-  receiptInput.value = '';
+  input.value = '';
   if (!file || !id) return;
   const inSheet = sheet.open && sheetPurchase?.id === id;
   try {
@@ -571,7 +575,9 @@ receiptInput.addEventListener('change', async () => {
       if (card) card.insertAdjacentHTML('beforeend', `<p class="error">${esc(message)}</p>`);
     }
   }
-});
+}
+receiptInput.addEventListener('change', () => savePhoto(receiptInput));
+receiptLibrary.addEventListener('change', () => savePhoto(receiptLibrary));
 
 const localParts = (iso) => {
   const d = new Date(new Date(iso).getTime() + 8 * 3600e3).toISOString();
@@ -920,6 +926,7 @@ app.addEventListener('click', (e) => {
   else if (d.edit) openSheet(summary.transactions.find((t) => t.id === d.edit));
   else if (d.add !== undefined) openSheet(null);
   else if (d.receiptTake) { receiptTarget = d.receiptTake; receiptInput.click(); }
+  else if (d.receiptPick) { receiptTarget = d.receiptPick; receiptLibrary.click(); }
   else if (d.receiptSkip) { store.set('kd-no-receipt', d.receiptSkip); refresh(); }
   else if (d.checked) { store.set('kd-checked', d.checked); refresh(); }
   else if (d.defaultBudget !== undefined) openAmountSheet({ title: 'Default daily budget', label: 'Budget when you skip setting one (RM)', action: 'Save default', value: home.defaultBudget, optional: true, hint: 'Leave empty to use your can-spend-per-day amount.', save: (v) => api.setDefaultBudget(v) });
@@ -934,6 +941,7 @@ sheet.addEventListener('click', async (e) => {
   const el = e.target.closest('button');
   if (!el) return;
   if (el.dataset.receiptTake) { receiptTarget = el.dataset.receiptTake; receiptInput.click(); }
+  if (el.dataset.receiptPick) { receiptTarget = el.dataset.receiptPick; receiptLibrary.click(); }
   else if (el.dataset.receiptRemove) {
     // Removing needs a second tap within a few seconds, since it can't be undone.
     if (!el.classList.contains('confirm')) {
