@@ -97,7 +97,7 @@ async function ingest(request, env) {
     const foreign = /[A-Z$€£¥]/i.test(String(body.amount)) && !/RM|MYR/i.test(String(body.amount));
     const merchant = String(body.merchant || body.name || '').trim();
     const row = await insert(env, {
-      amount_sen, source: 'apple_pay', merchant: merchant || 'Apple Pay',
+      amount_sen, source: 'apple_pay', merchant: merchant || 'Apple Pay', item: cleanItem(body.item),
       card: body.card ? String(body.card).slice(0, 80) : null,
       needs_review: foreign || !merchant ? 1 : 0,
     });
@@ -124,7 +124,7 @@ async function ingest(request, env) {
       && (parsed.confirmed || rescue.paid) && !UNFINISHED_PAYMENT.test(body.text);
     const unsure = !complete && !rescued;
     const row = await insert(env, {
-      ...candidate, needs_review: unsure ? 1 : 0,
+      ...candidate, item: cleanItem(body.item), needs_review: unsure ? 1 : 0,
       category: merchant ? await categoryFor(env, merchant, rescue?.category) : 'Other',
       // Screen text is only kept when it's needed to fix a misread.
       raw_text: unsure ? String(body.text).slice(0, 4000) : null,
@@ -289,6 +289,25 @@ const saveReceipt = (env, id, image) => env.DB.prepare(
    ON CONFLICT (transaction_id) DO UPDATE SET image = excluded.image, created_at = excluded.created_at`,
 ).bind(id, image, new Date().toISOString()).run();
 
+const ITEM_WINDOW_MS = 10 * 60 * 1000;
+const cleanItem = (value) => String(value ?? '').trim().slice(0, 120) || null;
+
+/** Lets a Shortcut ask what you bought after logging, so dismissing the question never loses the purchase. */
+async function saveLatestItem(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const item = cleanItem(body.item);
+  if (!item) return text('Nothing to add.', 422);
+  if (!['apple_pay', 'shopeepay_qr', 'manual'].includes(body.source)) return text('Unknown payment source.', 400);
+  const since = new Date(Date.now() - ITEM_WINDOW_MS).toISOString();
+  const latest = await env.DB.prepare(
+    `SELECT id, amount_sen, merchant FROM transactions
+     WHERE source = ? AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT 1`,
+  ).bind(body.source, since).first();
+  if (!latest) return text('No purchase from the last 10 minutes to add this to.', 404);
+  await env.DB.prepare('UPDATE transactions SET item = ? WHERE id = ?').bind(item, latest.id).run();
+  return text(`Saved ${item} for ${formatRM(latest.amount_sen)} at ${latest.merchant}`);
+}
+
 async function saveLatestReceipt(request, env) {
   const body = await request.json().catch(() => ({}));
   const { image, error, status } = cleanImage(body.image);
@@ -406,6 +425,7 @@ async function api(request, env, url) {
     return json(row, 201);
   }
 
+  if (path === '/api/transactions/latest/item' && method === 'POST') return saveLatestItem(request, env);
   if (path === '/api/receipts/latest' && method === 'POST') return saveLatestReceipt(request, env);
   const receipt = path.match(/^\/api\/transactions\/([\w-]+)\/receipt$/);
   if (receipt) return receiptRoute(request, env, receipt[1]);

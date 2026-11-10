@@ -53,6 +53,27 @@ In Shortcuts > Automation > New Automation, choose **Wallet** (called **Transact
 
 This runs on in-store taps. In-app or online Apple Pay purchases may need adding by hand.
 
+### Ask what you bought (optional)
+
+These steps ask what you bought straight after a payment is logged, and save it in the **What** field. The purchase is logged first, so skipping or dismissing the question never loses it.
+
+**Apple Pay:** in the Wallet automation, add these after **Get Contents of URL**:
+
+1. **Ask for Input**: type Text, prompt "What did you buy at Shortcut Input > Merchant?" (insert Merchant as a property, as above)
+2. **If** Provided Input **has any value**
+3. Inside the If, **Get Contents of URL**: `https://YOUR-ADDRESS/api/transactions/latest/item`, with `source` = `apple_pay` and `item` = Provided Input
+4. Inside the If, **Show Notification** (body: Contents of URL)
+
+**ShopeePay QR:** in **Log receipt**, add these after **Show Notification**, before any receipt photo steps:
+
+1. **If** Contents of URL **contains** `logged`
+2. Inside the If, **Ask for Input**: type Text, prompt "Contents of URL. What did you buy?"
+3. Inside the If, a second **If** Provided Input **has any value**, containing:
+   - **Get Contents of URL**: `https://YOUR-ADDRESS/api/transactions/latest/item`, with `source` = `shopeepay_qr` and `item` = Provided Input
+   - **Show Notification** (body: Contents of URL)
+
+The first If skips the question when no payment was found on screen. The item goes on the latest purchase from that source in the last 10 minutes.
+
 ### Receipt photos (optional)
 
 KiraDuit offers a photo prompt for 30 minutes after a QR purchase, and you can add a photo to any purchase by tapping it. To be asked right after the double-tap instead, add these to the end of **Log receipt**:

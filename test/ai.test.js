@@ -202,3 +202,28 @@ test('an older database gets the item column added on first use', async () => {
   await post('/api/transactions', { amount: '1', merchant: 'A', item: 'B', category: 'Food', date: '2026-11-01', time: '10:00' });
   assert.equal(rows()[1].item, 'B');
 });
+
+test('a Shortcut can add what was bought to the purchase it just logged', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'RM1.50', merchant: 'Mamak XYZ' });
+  await post('/api/ingest', scan('Payment Successful\nRM8.00\nMerchant\nKedai Ali'));
+  const res = await post('/api/transactions/latest/item', { source: 'apple_pay', item: ' Teh Ais ' });
+  assert.equal(await res.text(), 'Saved Teh Ais for RM1.50 at Mamak XYZ');
+  assert.equal(rows().find((r) => r.source === 'apple_pay').item, 'Teh Ais');
+  assert.equal(rows().find((r) => r.source === 'shopeepay_qr').item, null);
+  assert.equal((await post('/api/transactions/latest/item', { source: 'apple_pay', item: '  ' })).status, 422);
+  assert.equal((await post('/api/transactions/latest/item', { source: 'cash', item: 'x' })).status, 400);
+});
+
+test('the item is only added to a purchase from the last 10 minutes', async () => {
+  const { env, post } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'RM1.50', merchant: 'Mamak XYZ' });
+  env.DB.raw.prepare('UPDATE transactions SET occurred_at = ?').run(new Date(Date.now() - 11 * 60 * 1000).toISOString());
+  assert.equal((await post('/api/transactions/latest/item', { source: 'apple_pay', item: 'Teh Ais' })).status, 404);
+});
+
+test('ingest also accepts the item directly', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'RM1.50', merchant: 'Mamak XYZ', item: 'Teh Ais' });
+  assert.equal(rows()[0].item, 'Teh Ais');
+});
