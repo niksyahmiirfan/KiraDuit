@@ -163,9 +163,9 @@ const csvCell = (value) => {
 export function toCsv(txs) {
   const rows = [...txs].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at)).map((t) => {
     const local = new Date(new Date(t.occurred_at).getTime() + MYT_OFFSET_MS).toISOString();
-    return [t.local_date, local.slice(11, 16), t.merchant, t.category, (t.amount_sen / 100).toFixed(2), SOURCE_LABELS[t.source], t.card, t.needs_review ? 'yes' : 'no'].map(csvCell).join(',');
+    return [t.local_date, local.slice(11, 16), t.merchant, t.item, t.category, (t.amount_sen / 100).toFixed(2), SOURCE_LABELS[t.source], t.card, t.needs_review ? 'yes' : 'no'].map(csvCell).join(',');
   });
-  return `Date,Time,Merchant,Category,Amount (RM),Paid with,Card,Needs checking\r\n${rows.join('\r\n')}\r\n`;
+  return `Date,Time,Merchant,Item,Category,Amount (RM),Paid with,Card,Needs checking\r\n${rows.join('\r\n')}\r\n`;
 }
 
 /** The matching stretch of the previous week or pay period, so a part-finished period compares fairly. */

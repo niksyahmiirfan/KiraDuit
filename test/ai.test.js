@@ -146,14 +146,15 @@ test('keyword matches and placeholders skip the model; invalid categories are ig
 
 test('drafts save nothing and drop invented prices', async () => {
   const { post, rows } = setup({ items: [
-    { amount: 8.5, merchant: 'Nasi lemak', category: 'Food' },
-    { amount: 2, merchant: 'Teh tarik', category: 'Nope' },
-    { amount: 99, merchant: 'Invented', category: 'Food' },
+    { amount: 8.5, item: 'Nasi Lemak', merchant: 'Mamak XYZ', category: 'Food' },
+    { amount: 2, item: 'Teh Tarik', merchant: null, category: 'Nope' },
+    { amount: 99, item: 'Invented', merchant: 'Mamak XYZ', category: 'Food' },
+    { amount: 3, item: null, merchant: null, category: 'Food' },
   ] });
-  const res = await post('/api/draft', { text: 'nasi lemak 8.50, teh tarik 2' });
-  assert.deepEqual(await res.json(), { skipped: 1, items: [
-    { amount_sen: 850, merchant: 'Nasi lemak', category: 'Food' },
-    { amount_sen: 200, merchant: 'Teh tarik', category: 'Other' },
+  const res = await post('/api/draft', { text: 'nasi lemak 8.50, teh tarik 2, kopi 3 at Mamak XYZ' });
+  assert.deepEqual(await res.json(), { skipped: 2, items: [
+    { amount_sen: 850, merchant: 'Mamak XYZ', item: 'Nasi Lemak', category: 'Food' },
+    { amount_sen: 200, merchant: '', item: 'Teh Tarik', category: 'Other' },
   ] });
   assert.equal(rows().length, 0);
 });
@@ -169,4 +170,35 @@ test('stops calling the model at the daily limit', async () => {
   env.DB.raw.prepare("INSERT INTO settings (key, value) VALUES ('ai_usage', ?)").run(`${new Date().toISOString().slice(0, 10)}:150`);
   assert.equal((await post('/api/draft', { text: 'kopi 3' })).status, 503);
   assert.equal(calls.length, 0);
+});
+
+const patch = (env, id, body) => handleApi(new Request(`https://x/api/transactions/${id}`, {
+  method: 'PATCH', headers: { authorization: 'Bearer key' }, body: JSON.stringify(body),
+}), env);
+
+test('a purchase keeps what was bought separately from where', async () => {
+  const { env, post, rows } = setup();
+  const res = await post('/api/transactions', { amount: '1.50', merchant: 'Mamak XYZ', item: ' Teh Ais ', category: 'Food', date: '2026-11-01', time: '10:00' });
+  assert.equal(res.status, 201);
+  const [row] = rows();
+  assert.equal(row.merchant, 'Mamak XYZ');
+  assert.equal(row.item, 'Teh Ais');
+  await patch(env, row.id, { item: 'Teh O Ais' });
+  assert.equal(rows()[0].item, 'Teh O Ais');
+  await patch(env, row.id, { item: '' });
+  assert.equal(rows()[0].item, null);
+  await post('/api/transactions', { amount: '2', merchant: 'Kedai', category: 'Food', date: '2026-11-01', time: '10:00' });
+  assert.equal(rows()[1].item, null);
+});
+
+test('an older database gets the item column added on first use', async () => {
+  const { env, post, rows } = setup();
+  env.DB.raw.exec('ALTER TABLE transactions DROP COLUMN item');
+  const { default: fresh } = await import(`../src/index.js?fresh=${Date.now()}`).then((m) => ({ default: m.handleApi }));
+  await fresh(new Request('https://x/api/ingest', { method: 'POST', headers: { authorization: 'Bearer key' },
+    body: JSON.stringify({ source: 'apple_pay', amount: 'RM3.00', merchant: 'ZUS Coffee' }) }), env);
+  assert.equal(rows()[0].item, null);
+  assert.ok(env.DB.raw.prepare('PRAGMA table_info(transactions)').all().some((c) => c.name === 'item'));
+  await post('/api/transactions', { amount: '1', merchant: 'A', item: 'B', category: 'Food', date: '2026-11-01', time: '10:00' });
+  assert.equal(rows()[1].item, 'B');
 });

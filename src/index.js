@@ -10,6 +10,19 @@ const text = (body, status = 200) =>
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
 
+// Databases created before the item field existed get the column added once, on first use.
+let schemaReady = false;
+async function ensureSchema(env) {
+  if (schemaReady) return;
+  const { results } = await env.DB.prepare('PRAGMA table_info(transactions)').all();
+  if (!results.some((c) => c.name === 'item')) {
+    await env.DB.prepare('ALTER TABLE transactions ADD COLUMN item TEXT').run().catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message))) throw e;
+    });
+  }
+  schemaReady = true;
+}
+
 async function authorized(request, env) {
   if (!env.API_TOKEN) return false;
   const given = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
@@ -45,15 +58,15 @@ async function insert(env, t) {
     id: crypto.randomUUID(),
     occurred_at: now.toISOString(),
     local_date: localDate(now),
-    card: null, reference: null, raw_text: null, needs_review: 0,
+    card: null, item: null, reference: null, raw_text: null, needs_review: 0,
     ...t,
     category: t.category || (await categoryFor(env, t.merchant)),
   };
   row.occurred_at = now.toISOString();
   await env.DB.prepare(
-    `INSERT INTO transactions (id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review, reference, raw_text)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-  ).bind(row.id, row.amount_sen, row.merchant, row.category, row.source, row.card, row.occurred_at,
+    `INSERT INTO transactions (id, amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review, reference, raw_text)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(row.id, row.amount_sen, row.merchant, row.item, row.category, row.source, row.card, row.occurred_at,
     row.local_date, row.needs_review, row.reference, row.raw_text).run();
   return row;
 }
@@ -157,7 +170,7 @@ async function loadSummary(env, date) {
   const end = [...weekDates(date), date].sort().at(-1);
   const [{ results }, budget] = await Promise.all([
     env.DB.prepare(
-      `SELECT id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review,
+      `SELECT id, amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review,
          EXISTS (SELECT 1 FROM receipts WHERE transaction_id = transactions.id) AS has_receipt
        FROM transactions WHERE local_date BETWEEN ? AND ?`,
     ).bind(windowStart(date), end).all(),
@@ -255,7 +268,7 @@ async function removeCommitment(env, id) {
 }
 
 async function exportCsv(env) {
-  const { results } = await env.DB.prepare('SELECT amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review FROM transactions').all();
+  const { results } = await env.DB.prepare('SELECT amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review FROM transactions').all();
   return new Response(toCsv(results), {
     headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="kiraduit.csv"', 'cache-control': 'no-store' },
   });
@@ -336,6 +349,7 @@ function cleanEdits(body) {
     out.merchant = String(body.merchant).trim().slice(0, 120);
     if (!out.merchant) return { error: 'Enter where you paid.' };
   }
+  if (body.item !== undefined) out.item = String(body.item ?? '').trim().slice(0, 120) || null;
   if (body.date !== undefined || body.time !== undefined) {
     const { date, time } = body;
     const valid = isDate(date) && /^([01]\d|2[0-3]):[0-5]\d$/.test(time || '')
@@ -354,6 +368,7 @@ function cleanEdits(body) {
 
 async function api(request, env, url) {
   if (!(await authorized(request, env))) return text('Invalid access key.', 401);
+  await ensureSchema(env);
   const path = url.pathname.replace(/\/$/, '');
   const method = request.method;
   const date = url.searchParams.get('date') || localDate();
@@ -381,7 +396,7 @@ async function api(request, env, url) {
   if (path === '/api/transactions' && method === 'POST') {
     const body = await request.json().catch(() => ({}));
     const { out, error } = cleanEdits({
-      amount: body.amount ?? '', merchant: body.merchant ?? '',
+      amount: body.amount ?? '', merchant: body.merchant ?? '', item: body.item ?? '',
       ...(body.category ? { category: body.category } : {}),
       ...(body.date ? { date: body.date, time: body.time } : {}),
     });
