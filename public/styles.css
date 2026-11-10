@@ -136,6 +136,33 @@ dialog h2 { font-size: 20px; }
 label { display: block; margin-top: 16px; font-size: 15px; color: var(--soft); }
 input, select { display: block; width: 100%; height: 48px; margin-top: 4px; padding: 0 12px; font-size: 17px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; appearance: none; }
 .optional { font-size: 14px; }
+.split-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; margin-top: 16px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; text-align: left; font-weight: 500; }
+.split-row span:last-child { margin-left: auto; color: var(--soft); font-weight: 400; }
+.split-row svg { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.split-note { color: var(--flag); }
+.add-friend { display: flex; gap: 10px; margin-top: 16px; }
+.add-friend input { flex: 1; min-width: 0; margin-top: 0; }
+.add-friend button { min-width: 72px; min-height: 48px; border-radius: 24px; background: var(--ink); color: var(--paper); font-weight: 500; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chip { min-height: 36px; padding: 0 14px; border: 1px solid var(--line); border-radius: 18px; }
+.shares { margin-top: 12px; }
+.share { display: grid; grid-template-columns: 1fr 112px 44px; gap: 8px; align-items: center; min-height: 56px; border-top: 1px solid var(--line); }
+.share span { overflow-wrap: anywhere; }
+.share em { margin-left: 8px; font-size: 13px; font-style: normal; color: var(--soft); }
+.share input { margin-top: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.share-remove { min-height: 44px; font-size: 24px; color: var(--soft); }
+.split-mine { display: flex; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--line); }
+.split-mine b { font-variant-numeric: tabular-nums; }
+.split-mine b.bad { color: var(--flag); }
+.sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.sheet-close { flex: none; display: grid; place-items: center; width: 44px; height: 44px; margin: -8px -10px 0 0; border-radius: 22px; color: var(--soft); }
+.sheet-close svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.actions.end { justify-content: flex-end; }
+.owed-list { margin-top: 12px; }
+.owed-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 60px; border-top: 1px solid var(--line); }
+.owed-row small { display: block; color: var(--soft); font-size: 14px; }
+.owed-row button { min-height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 20px; font-weight: 500; }
+button.confirm { color: var(--flag); }
 .quick { margin-top: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 textarea { display: block; width: 100%; min-height: 72px; margin-top: 4px; padding: 12px; font-size: 17px; line-height: 1.35; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; resize: none; }
 .draft { min-width: 0; margin: 0; padding: 0 0 8px; border: 0; border-bottom: 1px solid var(--line); }
@@ -183,7 +210,7 @@ textarea { display: block; width: 100%; min-height: 72px; margin-top: 4px; paddi
 .hint { margin-top: 6px; font-size: 14px; color: var(--soft); }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .check { margin-top: 24px; padding: 14px 16px; background: var(--raised); border-radius: 12px; }
-.check div { display: flex; gap: 20px; margin-top: 4px; }
+.check div { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 20px; margin-top: 4px; }
 .check button { min-height: 44px; font-weight: 500; }
 .check button + button { color: var(--soft); font-weight: 400; }
 
@@ -256,7 +283,7 @@ details[open] > summary::after { content: '\2212'; }
 
 /* Receipts */
 .receipt-card { margin-top: 16px; padding: 14px 16px; background: var(--raised); border-radius: 12px; }
-.receipt-card div { display: flex; gap: 20px; margin-top: 4px; }
+.receipt-card div { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 20px; margin-top: 4px; }
 .receipt-card button { min-height: 44px; font-weight: 500; }
 .receipt-card button + button { color: var(--soft); font-weight: 400; }
 #receipt-area { margin-top: 16px; }

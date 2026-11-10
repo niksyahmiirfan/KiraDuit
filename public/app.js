@@ -1,3 +1,4 @@
+import { cleanShares, equalShares, groupOwed, splitHint, usualFood } from './split.js';
 import { CATEGORIES, SOURCE_LABELS, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
 
 const DEMO = Boolean(window.KIRADUIT_DEMO);
@@ -47,6 +48,7 @@ function makeDemoData() {
       txs.push({ id: `${back}-${i}`, amount_sen: Math.round(sen * (back ? 0.8 + vary * 0.12 : 1) / 10) * 10, merchant, category, source, occurred_at: iso(d, h, m), local_date: d, needs_review: 0 });
     });
   }
+  txs.push({ id: 'group-lunch', amount_sen: 18600, merchant: 'Restoran Tomyam Seri Pagi', category: 'Food', source: 'apple_pay', occurred_at: iso(today, 13, 5), local_date: today, needs_review: 0 });
   const unsure = txs.find((t) => t.local_date === today && t.merchant === 'ZUS Coffee');
   if (unsure) { unsure.merchant = 'ShopeePay QR'; unsure.category = 'Other'; unsure.needs_review = 1; }
   return txs;
@@ -57,6 +59,19 @@ let demoIncome = DEMO ? 450000 : null;
 let demoDefault = null;
 let demoCommitments = DEMO ? [{ id: 'c1', name: 'Rent', amount_sen: 90000 }, { id: 'c2', name: 'Car loan', amount_sen: 65000 }, { id: 'c3', name: 'Phone plan', amount_sen: 6800 }] : [];
 const demoReceipts = new Map();
+const demoSplits = new Map(); // purchase id -> { bill_sen, shares: [{ id, friend, amount_sen, paid }] }
+const demoOwedRows = () => [...demoSplits].flatMap(([id, s]) => {
+  const t = demoTxs.find((x) => x.id === id);
+  return s.shares.filter((x) => !x.paid).map((x) => ({ ...x, transaction_id: id, merchant: t.merchant, item: t.item, local_date: t.local_date }));
+});
+function demoWithSplits(txs) {
+  const usual = usualFood(demoTxs.filter((t) => t.category === 'Food' && !demoSplits.has(t.id)).map((t) => t.amount_sen));
+  return txs.map((t) => {
+    const s = demoSplits.get(t.id);
+    const row = { ...t, has_receipt: demoReceipts.has(t.id) ? 1 : 0, bill_sen: s?.bill_sen ?? null, owed_sen: s ? s.shares.filter((x) => !x.paid).reduce((a, x) => a + x.amount_sen, 0) : 0 };
+    return { ...row, split_hint: splitHint(row, usual) };
+  });
+}
 const commitmentsTotal = () => demoCommitments.reduce((a, c) => a + c.amount_sen, 0);
 function demoBudget(d) {
   if (demoBudgets[d]) return { amount: demoBudgets[d], source: 'set' };
@@ -86,7 +101,7 @@ async function request(path, options = {}) {
   return parsed ?? body;
 }
 const api = DEMO ? {
-  load: async (d) => summarize(demoTxs.filter((t) => t.local_date >= windowStart(d)).map((t) => ({ ...t, has_receipt: demoReceipts.has(t.id) ? 1 : 0 })), d, demoBudget(d).amount, demoBudget(d).source),
+  load: async (d) => summarize(demoWithSplits(demoTxs.filter((t) => t.local_date >= windowStart(d))), d, demoBudget(d).amount, demoBudget(d).source),
   loadHome: async (view, d) => {
     const today = localDate();
     return {
@@ -98,8 +113,29 @@ const api = DEMO ? {
       todayBudget: demoBudget(today).amount,
       todayBudgetSource: demoBudget(today).source,
       defaultBudget: demoDefault,
+      owedList: groupOwed(demoOwedRows()).map((f) => ({ name: f.name, owed_sen: f.owed_sen, bills: f.shares.length })),
+      owedTotal: demoOwedRows().reduce((a, x) => a + x.amount_sen, 0),
     };
   },
+  split: async (id) => {
+    const t = demoTxs.find((x) => x.id === id);
+    const s = demoSplits.get(id);
+    const recent = [...new Set([...demoSplits.values()].flatMap((x) => x.shares.map((y) => y.friend)).concat(['Aina', 'Hafiz', 'Mei Ling', 'Arjun']))];
+    return { bill_sen: s?.bill_sen ?? t.amount_sen, mine_sen: t.amount_sen, shares: s?.shares ?? [], recent };
+  },
+  saveSplit: async (id, input) => {
+    const t = demoTxs.find((x) => x.id === id);
+    const before = demoSplits.get(id);
+    const bill_sen = before?.bill_sen ?? t.amount_sen;
+    const { shares, mine, error } = cleanShares(bill_sen, input);
+    if (error) throw new Error(error);
+    const paid = new Set(before?.shares.filter((x) => x.paid).map((x) => x.friend.toLowerCase()));
+    demoSplits.set(id, { bill_sen, shares: shares.map((x, i) => ({ ...x, id: `${id}-s${i}-${Date.now()}`, paid: paid.has(x.friend.toLowerCase()) })) });
+    t.amount_sen = mine;
+  },
+  unsplit: async (id) => { const s = demoSplits.get(id); if (s) { demoTxs.find((x) => x.id === id).amount_sen = s.bill_sen; demoSplits.delete(id); } },
+  owed: async () => ({ friends: groupOwed(demoOwedRows()) }),
+  setPaid: async (shareId, paid) => { for (const s of demoSplits.values()) for (const x of s.shares) if (x.id === shareId) x.paid = paid; },
   setBudget: async (d, amount) => { demoBudgets[d] = toSen(amount); },
   setIncome: async (amount) => { demoIncome = toSen(amount); },
   getReceipt: async (id) => demoReceipts.get(id),
@@ -134,6 +170,11 @@ const api = DEMO ? {
   remove: (id) => request(`/api/transactions/${id}`, { method: 'DELETE' }),
   add: (f) => request('/api/transactions', { method: 'POST', body: JSON.stringify(f) }),
   draft: (text) => request('/api/draft', { method: 'POST', body: JSON.stringify({ text }) }),
+  split: (id) => request(`/api/transactions/${id}/split`),
+  saveSplit: (id, shares) => request(`/api/transactions/${id}/split`, { method: 'PUT', body: JSON.stringify({ shares }) }),
+  unsplit: (id) => request(`/api/transactions/${id}/split`, { method: 'DELETE' }),
+  owed: () => request('/api/owed'),
+  setPaid: (shareId, paid) => request(`/api/shares/${shareId}`, { method: 'POST', body: JSON.stringify({ paid }) }),
 };
 
 /* ---- views ---- */
@@ -228,8 +269,10 @@ const ICONS = {
   links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
   signout: '<path d="M14 4H6v16h8"/><path d="M10 12h10M16 8l4 4-4 4"/>',
+  split: '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5M14.5 14.6c2.6-.6 5 .8 5.8 4.4"/>',
   receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -324,6 +367,23 @@ function moneySetup(h) {
   </details></section>`;
 }
 
+function owedBlock(h) {
+  if (!h.owedTotal) return '';
+  return `<section><h2>Owed to you<small>${formatRM(h.owedTotal)}</small></h2>
+    ${h.owedList.map((f) => `<button class="list-row" data-friend="${esc(f.name)}"><span>${esc(f.name)}</span>
+      <span>${formatRM(f.owed_sen)}${f.bills > 1 ? ` · ${f.bills} bills` : ''}</span></button>`).join('')}</section>`;
+}
+
+const dismissedSplits = () => { try { return JSON.parse(store.get('kd-no-split') || '[]'); } catch { return []; } };
+
+function splitPrompt(s) {
+  const skip = dismissedSplits();
+  const t = [...s.transactions].reverse().find((x) => x.split_hint && !skip.includes(x.id));
+  if (!t) return '';
+  return `<div class="receipt-card"><p>${esc(spentAt(t))} looks like a group meal. Split the bill?</p>
+    <div><button data-split="${esc(t.id)}">Split bill</button><button data-split-skip="${esc(t.id)}">No</button></div></div>`;
+}
+
 const RECEIPT_PROMPT_MS = 30 * 60 * 1000;
 
 function receiptPrompt(t) {
@@ -380,6 +440,7 @@ function renderHome() {
     </div>
     ${receiptPrompt(h.receiptCandidate)}
     ${eveningCheck(h.today)}
+    ${owedBlock(h)}
     ${calendar(h)}
     ${h.count ? topSpending(h) : ''}
     ${isMonth ? moneySetup(h) : ''}
@@ -418,6 +479,7 @@ function render() {
     ${bigTotal(s.total)}
     ${verdict(s)}
     ${date === today || s.budget ? budgetStrip(s.total, s.budget, date === today ? 'Today' : 'Budget', date, s.budgetSource) : ''}
+    ${splitPrompt(s)}
     ${date === today ? receiptPrompt([...s.transactions].reverse().find((t) => t.source === 'shopeepay_qr' && !t.has_receipt)) + eveningCheck(today) : ''}
     ${ribbon(s)}
     ${showTip ? `<div class="tip"><span>Install this on your iPhone: in Safari, tap Share, then Add to Home Screen.</span><button data-tip>Dismiss</button></div>` : ''}
@@ -444,7 +506,7 @@ function purchaseList(s) {
   const shown = all.slice(first, first + BUYS_PER_PAGE);
   const rows = shown.map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
         <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
-        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? `<span class="receipt-mark" role="img" aria-label="Receipt attached" title="Receipt attached">${icon('receipt')}</span>` : ''}</small></button>`).join('');
+        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.bill_sen ? `, <span class="split-note">${t.owed_sen ? `${formatRM(t.owed_sen)} owed` : 'split, settled'}</span>` : ''}${t.has_receipt ? `<span class="receipt-mark" role="img" aria-label="Receipt attached" title="Receipt attached">${icon('receipt')}</span>` : ''}</small></button>`).join('');
   if (pages < 2) return rows;
   return `${rows}<nav class="pager" aria-label="Purchase pages">
     <button data-buy-page="-1" aria-label="Newer purchases" ${buyPage === 0 ? 'disabled' : ''}>‹</button>
@@ -524,12 +586,15 @@ function openSheet(t) {
     <p class="error" id="quick-error" hidden></p>
     <button type="button" class="text-action" data-draft>Read this</button></div>`}
     ${fromReceipt ? '<p class="error">Check these details against your receipt.</p>' : ''}
-    <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${t ? (t.amount_sen / 100).toFixed(2) : ''}"></label>
+    <label>${t?.bill_sen ? 'Your share (RM)' : 'Amount (RM)'}<input name="amount" inputmode="decimal" required value="${t ? (t.amount_sen / 100).toFixed(2) : ''}"></label>
+    ${t?.bill_sen ? `<p class="hint">Bill total ${formatRM(t.bill_sen)}. Changing your share changes the total.</p>` : ''}
     <label>Where<input name="merchant" required maxlength="120" placeholder="Mamak XYZ" value="${t ? esc(t.merchant) : ''}"></label>
     <label>What <span class="optional">(optional)</span><input name="item" maxlength="120" placeholder="Teh Ais" value="${t?.item ? esc(t.item) : ''}"></label>
     <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${(t?.category || 'Food') === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
     <div class="two"><label>Date<input name="date" type="date" required max="${today}" value="${when.date}"></label>
     <label>Time<input name="time" type="time" required value="${when.time}"></label></div>
+    ${t ? `<button type="button" class="split-row" data-split-open>${icon('split')}<span>${t.bill_sen ? 'Split with friends' : 'Split this bill'}</span>
+      <span>${t.bill_sen ? (t.owed_sen ? `${formatRM(t.owed_sen)} owed` : 'Settled') : ''}</span></button>` : ''}
     ${t ? '<div id="receipt-area"></div>' : ''}
     <p class="error" hidden></p>
     <div class="actions">${t ? '<button type="button" class="quiet" data-del>Delete</button>' : '<button type="button" class="quiet" data-close>Cancel</button>'}
@@ -548,6 +613,7 @@ function openSheet(t) {
     } catch (err) { fail(err); }
   };
   form.querySelector('[data-close]')?.addEventListener('click', () => sheet.close());
+  form.querySelector('[data-split-open]')?.addEventListener('click', () => openSplitSheet(t));
   form.querySelector('[data-draft]')?.addEventListener('click', async (e) => {
     const button = e.currentTarget;
     const error = form.querySelector('#quick-error');
@@ -566,6 +632,124 @@ function openSheet(t) {
   form.querySelector('[data-del]')?.addEventListener('click', async () => {
     try { await api.remove(t.id); sheet.close(); refresh(); } catch (err) { fail(err); }
   });
+  sheet.showModal();
+}
+
+// Friends' shares are edited here. Your share is whatever the friends don't owe.
+async function openSplitSheet(t) {
+  sheet.innerHTML = '<form method="dialog"><h2>Split bill</h2><p class="hint">Loading</p></form>';
+  if (!sheet.open) sheet.showModal();
+  let data;
+  try { data = await api.split(t.id); } catch (err) {
+    sheet.innerHTML = `<form method="dialog"><h2>Split bill</h2><p class="error">${esc(err.message)}</p>
+      <div class="actions"><button type="button" class="quiet" data-close>Close</button></div></form>`;
+    sheet.querySelector('[data-close]').onclick = () => sheet.close();
+    return;
+  }
+  const bill = data.bill_sen;
+  const friends = data.shares.map((s) => ({ friend: s.friend, amount_sen: s.amount_sen, paid: s.paid }));
+  let equal = !friends.length || friends.every((f) => f.amount_sen === equalShares(bill, friends.length).each);
+  const mine = () => bill - friends.reduce((a, f) => a + f.amount_sen, 0);
+  const spread = () => { if (equal) { const { each } = equalShares(bill, friends.length); friends.forEach((f) => { f.amount_sen = each; }); } };
+  const has = (name) => friends.some((f) => f.friend.toLowerCase() === name.toLowerCase());
+
+  const draw = (message = '') => {
+    const picks = data.recent.filter((n) => !has(n)).slice(0, 8);
+    sheet.innerHTML = `<form method="dialog" class="split-sheet"><h2>Split ${formatRM(bill)}</h2>
+      <p class="hint">${esc(t.merchant)}${t.item ? `, ${esc(t.item)}` : ''}</p>
+      <div class="add-friend"><input id="friend-name" maxlength="60" autocomplete="off" placeholder="Friend's name" aria-label="Friend's name">
+        <button type="button" data-friend-add>Add</button></div>
+      ${picks.length ? `<div class="chips">${picks.map((n) => `<button type="button" class="chip" data-friend-pick="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : ''}
+      <div class="shares">${friends.map((f, i) => `<div class="share"><span>${esc(f.friend)}${f.paid ? '<em>Paid</em>' : ''}</span>
+        <input data-share="${i}" inputmode="decimal" value="${(f.amount_sen / 100).toFixed(2)}" aria-label="${esc(f.friend)} owes, in RM">
+        <button type="button" class="share-remove" data-share-remove="${i}" aria-label="Remove ${esc(f.friend)}">×</button></div>`).join('')}</div>
+      ${friends.length ? `<p class="split-mine">Your share <b>${formatRM(mine())}</b></p>
+        <button type="button" class="text-action" data-equal ${equal ? 'hidden' : ''}>Split equally</button>` : '<p class="hint">Add each friend who owes you. The bill is split equally, and you can change any amount.</p>'}
+      <p class="error" ${message ? '' : 'hidden'}>${esc(message)}</p>
+      <div class="actions">${data.shares.length ? '<button type="button" class="quiet" data-unsplit>Remove split</button>' : '<button type="button" class="quiet" data-close>Cancel</button>'}
+        <button class="primary" ${friends.length ? '' : 'disabled'}>Save split</button></div></form>`;
+    const form = sheet.querySelector('form');
+    const nameInput = form.querySelector('#friend-name');
+    const add = (name) => {
+      const clean = name.trim().replace(/\s+/g, ' ');
+      if (!clean) return;
+      if (has(clean)) return draw(`${clean} is already in this split.`);
+      friends.push({ friend: clean, amount_sen: 0, paid: false });
+      spread();
+      draw();
+      sheet.querySelector('#friend-name').focus();
+    };
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(nameInput.value); } });
+    form.addEventListener('input', (e) => {
+      if (e.target.dataset.share === undefined) return;
+      friends[Number(e.target.dataset.share)].amount_sen = Math.round(parseFloat(e.target.value || '0') * 100) || 0;
+      equal = false;
+      const b = form.querySelector('.split-mine b');
+      b.textContent = formatRM(mine());
+      b.classList.toggle('bad', mine() <= 0);
+      form.querySelector('[data-equal]').hidden = false;
+    });
+    form.addEventListener('click', async (e) => {
+      const el = e.target.closest('button');
+      if (!el) return;
+      const d = el.dataset;
+      if (d.friendAdd !== undefined) add(nameInput.value);
+      else if (d.friendPick) add(d.friendPick);
+      else if (d.shareRemove) { friends.splice(Number(d.shareRemove), 1); spread(); draw(); }
+      else if (d.equal !== undefined) { equal = true; spread(); draw(); }
+      else if (d.close !== undefined) sheet.close();
+      else if (d.unsplit !== undefined) {
+        // A second tap confirms, since paid-back records for this bill are cleared.
+        if (!el.classList.contains('confirm')) { el.classList.add('confirm'); el.textContent = 'Tap again to remove'; return; }
+        try { await api.unsplit(t.id); sheet.close(); } catch (err) { draw(err.message); }
+      }
+    });
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const { error } = cleanShares(bill, friends.map((f) => ({ friend: f.friend, amount_sen: f.amount_sen })));
+      if (error) return draw(error);
+      try {
+        await api.saveSplit(t.id, friends.map((f) => ({ friend: f.friend, amount_sen: f.amount_sen })));
+        sheet.close();
+      } catch (err) { draw(err.message); }
+    };
+  };
+  draw();
+}
+
+async function openFriendSheet(name) {
+  let friend;
+  const draw = (message = '') => {
+    if (!friend?.shares.length) { sheet.close(); return; }
+    sheet.innerHTML = `<form method="dialog"><div class="sheet-head"><h2>${esc(friend.name)} owes ${formatRM(friend.owed_sen)}</h2>
+      <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
+      <div class="owed-list">${friend.shares.map((s) => `<div class="owed-row"><span><b>${formatRM(s.amount_sen)}</b>
+        <small>${s.item ? `${esc(s.item)} at ` : ''}${esc(s.merchant)}, ${shortDate(s.local_date)}</small></span>
+        <button type="button" data-paid="${esc(s.id)}">Paid</button></div>`).join('')}</div>
+      <p class="error" ${message ? '' : 'hidden'}>${esc(message)}</p>
+      ${friend.shares.length > 1 ? '<div class="actions end"><button class="primary">Mark all paid</button></div>' : ''}</form>`;
+    const form = sheet.querySelector('form');
+    const settle = async (ids) => {
+      try {
+        for (const id of ids) {
+          await api.setPaid(id, true);
+          const s = friend.shares.find((x) => x.id === id);
+          friend.owed_sen -= s.amount_sen;
+          friend.shares = friend.shares.filter((x) => x.id !== id);
+        }
+        draw();
+      } catch (err) { draw(err.message); }
+    };
+    form.querySelector('[data-close]').onclick = () => sheet.close();
+    form.addEventListener('click', (e) => { const id = e.target.closest('[data-paid]')?.dataset.paid; if (id) settle([id]); });
+    form.onsubmit = (e) => { e.preventDefault(); settle(friend.shares.map((s) => s.id)); };
+  };
+  try {
+    const { friends } = await api.owed();
+    friend = friends.find((f) => f.name.toLowerCase() === name.toLowerCase());
+  } catch { friend = null; }
+  if (!friend) return refresh();
+  draw();
   sheet.showModal();
 }
 
@@ -727,6 +911,9 @@ app.addEventListener('click', (e) => {
   else if (d.income !== undefined) openAmountSheet({ title: 'Monthly income', label: 'Income received on the 27th (RM)', action: 'Save income', value: home.income, save: (v) => api.setIncome(v) });
   else if (d.tick) { selected = nextTick(el, e.detail === 0); buyPage = null; render(); }
   else if (d.buyPage) { buyPage += Number(d.buyPage); render(); }
+  else if (d.split) openSplitSheet(summary.transactions.find((t) => t.id === d.split));
+  else if (d.splitSkip) { store.set('kd-no-split', JSON.stringify([d.splitSkip, ...dismissedSplits()].slice(0, 50))); render(); }
+  else if (d.friend) openFriendSheet(d.friend);
   else if (d.edit) openSheet(summary.transactions.find((t) => t.id === d.edit));
   else if (d.add !== undefined) openSheet(null);
   else if (d.receiptTake) { receiptTarget = d.receiptTake; receiptInput.click(); }

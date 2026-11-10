@@ -17,7 +17,7 @@ function fakeD1() {
     bind: (...next) => statement(sql, next),
     first: async () => db.prepare(sql).get(...args) ?? null,
     all: async () => ({ results: db.prepare(sql).all(...args) }),
-    run: async () => db.prepare(sql).run(...args),
+    run: async () => ({ meta: { changes: db.prepare(sql).run(...args).changes } }),
   });
   return { prepare: (sql) => statement(sql), batch: async (list) => { for (const st of list) await st.run(); }, raw: db };
 }
@@ -261,5 +261,97 @@ test('a refund named in the Name field is recognised, but a credit card name is 
   await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell', name: 'RHB Credit Card' });
   assert.equal(rows().length, 1);
   await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell', name: 'Refund' });
+  assert.equal(rows().length, 0);
+});
+
+const call = (env, method, path, body) => handleApi(new Request(`https://x${path}`, {
+  method, headers: { authorization: 'Bearer key' }, body: body === undefined ? undefined : JSON.stringify(body),
+}), env);
+
+async function dinner(post, amount = '200.00') {
+  await post('/api/transactions', { amount, merchant: 'Restoran Sri Melayu', category: 'Food', date: localDateNow(), time: '20:00' });
+}
+const localDateNow = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+
+test('splitting a bill keeps only your share as spending and tracks what friends owe', async () => {
+  const { env, post, rows } = setup();
+  await dinner(post);
+  const id = rows()[0].id;
+  const shares = ['Aina', 'Ben', 'Chong', 'Dev'].map((friend) => ({ friend, amount: '40.00' }));
+  const res = await call(env, 'PUT', `/api/transactions/${id}/split`, { shares });
+  assert.deepEqual(await res.json(), { ok: true, mine_sen: 4000 });
+  assert.equal(rows()[0].amount_sen, 4000);
+
+  const summary = await (await call(env, 'GET', `/api/summary?date=${localDateNow()}`)).json();
+  assert.equal(summary.total, 4000);
+  assert.equal(summary.transactions[0].bill_sen, 20000);
+  assert.equal(summary.transactions[0].owed_sen, 16000);
+
+  const home = await (await call(env, 'GET', `/api/home?view=week&date=${localDateNow()}`)).json();
+  assert.equal(home.owedTotal, 16000);
+  assert.equal(home.owedList.length, 4);
+
+  const owed = await (await call(env, 'GET', '/api/owed')).json();
+  const ben = owed.friends.find((f) => f.name === 'Ben');
+  assert.equal((await call(env, 'POST', `/api/shares/${ben.shares[0].id}`, { paid: true })).status, 200);
+  const after = await (await call(env, 'GET', `/api/home?view=week&date=${localDateNow()}`)).json();
+  assert.equal(after.owedTotal, 12000);
+  assert.equal(after.todayTotal, 4000);
+});
+
+test('editing a split keeps paid friends paid; removing it restores the full bill', async () => {
+  const { env, post, rows } = setup();
+  await dinner(post);
+  const id = rows()[0].id;
+  await call(env, 'PUT', `/api/transactions/${id}/split`, { shares: [{ friend: 'Aina', amount: 50 }, { friend: 'Ben', amount: 50 }] });
+  const aina = (await (await call(env, 'GET', '/api/owed')).json()).friends.find((f) => f.name === 'Aina');
+  await call(env, 'POST', `/api/shares/${aina.shares[0].id}`, { paid: true });
+  await call(env, 'PUT', `/api/transactions/${id}/split`, { shares: [{ friend: 'aina', amount: 60 }, { friend: 'Ben', amount: 60 }] });
+  const split = await (await call(env, 'GET', `/api/transactions/${id}/split`)).json();
+  assert.equal(split.bill_sen, 20000);
+  assert.equal(split.mine_sen, 8000);
+  assert.deepEqual(split.shares.map((s) => [s.friend, s.paid]), [['aina', true], ['Ben', false]]);
+  assert.deepEqual(split.recent.sort(), ['Ben', 'aina']);
+  await call(env, 'DELETE', `/api/transactions/${id}/split`);
+  assert.equal(rows()[0].amount_sen, 20000);
+  assert.equal((await (await call(env, 'GET', '/api/owed')).json()).friends.length, 0);
+});
+
+test('a split is rejected when friends would owe the whole bill or more', async () => {
+  const { env, post, rows } = setup();
+  await dinner(post, '50.00');
+  const id = rows()[0].id;
+  const res = await call(env, 'PUT', `/api/transactions/${id}/split`, { shares: [{ friend: 'Aina', amount: 50 }] });
+  assert.equal(res.status, 422);
+  assert.equal((await call(env, 'PUT', `/api/transactions/${id}/split`, { shares: [{ friend: 'A', amount: 5 }, { friend: 'a', amount: 5 }] })).status, 422);
+  assert.equal(rows()[0].amount_sen, 5000);
+});
+
+test('editing your share updates the bill total, and deleting removes the shares', async () => {
+  const { env, post, rows } = setup();
+  await dinner(post);
+  const id = rows()[0].id;
+  await call(env, 'PUT', `/api/transactions/${id}/split`, { shares: [{ friend: 'Aina', amount: 100 }] });
+  await call(env, 'PATCH', `/api/transactions/${id}`, { amount: '120.00' });
+  assert.equal((await (await call(env, 'GET', `/api/transactions/${id}/split`)).json()).bill_sen, 22000);
+  await call(env, 'DELETE', `/api/transactions/${id}`);
+  assert.equal(env.DB.raw.prepare('SELECT COUNT(*) AS n FROM split_shares').get().n, 0);
+});
+
+test('large Food purchases well above your usual are suggested for splitting', async () => {
+  const { env, post } = setup();
+  for (let i = 0; i < 6; i++) await post('/api/transactions', { amount: '12.00', merchant: `Kedai ${i}`, category: 'Food', date: localDateNow(), time: '12:00' });
+  await dinner(post, '45.00');
+  await dinner(post, '90.00');
+  await post('/api/transactions', { amount: '300.00', merchant: 'Kedai Kasut', category: 'Shopping', date: localDateNow(), time: '13:00' });
+  const s = await (await call(env, 'GET', `/api/summary?date=${localDateNow()}`)).json();
+  assert.deepEqual(s.transactions.filter((t) => t.split_hint).map((t) => t.amount_sen), [9000]);
+});
+
+test('a refund still matches a split Apple Pay purchase by its full bill', async () => {
+  const { env, post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 200.00', merchant: 'Restoran Sri Melayu' });
+  await call(env, 'PUT', `/api/transactions/${rows()[0].id}/split`, { shares: [{ friend: 'Aina', amount: 100 }] });
+  await post('/api/ingest', { source: 'apple_pay', amount: '-MYR 200.00', merchant: 'Restoran Sri Melayu' });
   assert.equal(rows().length, 0);
 });

@@ -112,6 +112,7 @@ If you skip the 8 am prompt, KiraDuit uses your default budget, or your can-spen
 - **Receipts:** every logged payment shows a "Logged" notification. If you don't see one, the payment wasn't saved, so add it by hand.
 - **Checking:** anything the scan isn't sure about appears as "Tap to check".
 - **Categories:** when you change a merchant's category, future purchases there use it.
+- **Splitting a bill:** open a purchase and tap **Split this bill**, then add the friends who owe you. Only your share counts as spending, and what friends owe appears under **Owed to you** on Home until you mark it paid. KiraDuit also asks about Food purchases of RM60 or more that are over three times your usual Food purchase.
 - **Shortcuts page:** ShopeePay opens directly. For Touch 'n Go eWallet and MAE, create a shortcut with the **Open App** action for each and name them exactly **Open TNG** and **Open MAE**.
 
 ## Tips

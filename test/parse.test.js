@@ -70,8 +70,8 @@ test('allowance is fixed from the start of the day and null when nothing is left
 });
 test('CSV uses local time, quotes commas and neutralises formulas', () => {
   const csv = toCsv([{ occurred_at: '2026-11-09T16:30:00Z', local_date: '2026-11-10', merchant: 'Kedai, "Ali"', item: 'Teh ais', category: 'Food', amount_sen: 1250, source: 'apple_pay', card: null, needs_review: 0 }, { occurred_at: '2026-11-08T01:00:00Z', local_date: '2026-11-08', merchant: '=HYPERLINK(1)', category: 'Other', amount_sen: 100, source: 'manual', card: 'V', needs_review: 1 }]).split('\r\n');
-  assert.equal(csv[1], "2026-11-08,09:00,'=HYPERLINK(1),,Other,1.00,Added by hand,V,yes");
-  assert.equal(csv[2], '2026-11-10,00:30,"Kedai, ""Ali""",Teh ais,Food,12.50,Apple Pay,,no');
+  assert.equal(csv[1], "2026-11-08,09:00,'=HYPERLINK(1),,Other,1.00,,Added by hand,V,yes");
+  assert.equal(csv[2], '2026-11-10,00:30,"Kedai, ""Ali""",Teh ais,Food,12.50,,Apple Pay,,no');
 });
 test('previous range compares the same stretch of time', () => {
   assert.deepEqual(previousRange('week', '2026-11-09', '2026-11-15', '2026-11-11'), { start: '2026-11-02', end: '2026-11-04' });
