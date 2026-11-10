@@ -29,9 +29,13 @@ export function windowStart(date) {
   return candidates.sort()[0];
 }
 
+/** How a purchase was paid. QR scans are named by the app they came from, stored in card. */
+export const methodOf = (t) => (t.source === 'shopeepay_qr' ? t.card || 'ShopeePay' : SOURCE_LABELS[t.source] || t.source);
+
 const groupTotals = (txs, key) => {
   const totals = new Map();
-  for (const t of txs) totals.set(t[key], (totals.get(t[key]) || 0) + t.amount_sen);
+  const keyOf = typeof key === 'function' ? key : (t) => t[key];
+  for (const t of txs) totals.set(keyOf(t), (totals.get(keyOf(t)) || 0) + t.amount_sen);
   return [...totals].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total);
 };
 
@@ -67,7 +71,7 @@ export function summarize(txs, date, budget = null, budgetSource = null) {
     needsReview: today.filter((t) => t.needs_review).length,
     largest: today.reduce((max, t) => (!max || t.amount_sen > max.amount_sen ? t : max), null),
     byCategory: groupTotals(today, 'category'),
-    bySource: groupTotals(today, 'source'),
+    bySource: groupTotals(today, methodOf),
     week: weekDates(date).map((d) => ({ date: d, total: byDay.get(d) || 0 })),
     transactions: today,
   };
@@ -119,7 +123,7 @@ export function summarizePeriod(txs, { view, start, end, today, income = null, c
     count: inPeriod.length,
     average: elapsed ? Math.round(total / elapsed) : 0,
     byCategory: groupTotals(inPeriod, 'category'),
-    bySource: groupTotals(inPeriod, 'source'),
+    bySource: groupTotals(inPeriod, methodOf),
     income,
     commitments,
   };
@@ -150,7 +154,7 @@ const csvCell = (value) => {
 export function toCsv(txs) {
   const rows = [...txs].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at)).map((t) => {
     const local = new Date(new Date(t.occurred_at).getTime() + MYT_OFFSET_MS).toISOString();
-    return [t.local_date, local.slice(11, 16), t.merchant, t.item, t.category, (t.amount_sen / 100).toFixed(2), t.bill_sen ? (t.bill_sen / 100).toFixed(2) : '', SOURCE_LABELS[t.source], t.card, t.needs_review ? 'yes' : 'no'].map(csvCell).join(',');
+    return [t.local_date, local.slice(11, 16), t.merchant, t.item, t.category, (t.amount_sen / 100).toFixed(2), t.bill_sen ? (t.bill_sen / 100).toFixed(2) : '', methodOf(t), t.card, t.needs_review ? 'yes' : 'no'].map(csvCell).join(',');
   });
   return `Date,Time,Merchant,Item,Category,Amount (RM),Bill total (RM),Paid with,Card,Needs checking\r\n${rows.join('\r\n')}\r\n`;
 }

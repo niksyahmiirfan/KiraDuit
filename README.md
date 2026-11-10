@@ -30,7 +30,7 @@ In every shortcut below, the **Get Contents of URL** action uses:
 - Header: `Authorization` = `Bearer YOUR-ACCESS-KEY`
 - Request Body: JSON
 
-### ShopeePay QR (Back Tap)
+### QR receipts: ShopeePay, AEON Bank, TNG eWallet (Back Tap)
 
 Create a shortcut named **Log receipt**:
 
@@ -40,6 +40,8 @@ Create a shortcut named **Log receipt**:
 4. **Show Notification** (body: Contents of URL)
 
 Then go to Settings > Accessibility > Touch > Back Tap > Double Tap and choose **Log receipt**.
+
+The same shortcut works on the success screen of ShopeePay, AEON Bank and TNG eWallet, and KiraDuit tells them apart from the screen text. The person or shop paid becomes **Where**, and a recipient reference or remark becomes **What**. The app shows as the payment method under **Paid with**. Keep `source` = `shopeepay_qr` for all three.
 
 After paying, double-tap the back of your phone on the success screen. Tapping twice on the same receipt won't log it twice.
 

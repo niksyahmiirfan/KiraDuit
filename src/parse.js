@@ -1,9 +1,15 @@
 const EXCLUDED = /balance|baki|saved|discount|diskaun|voucher|coin|cashback|rebate|promo|reward/i;
 const TOTAL_LABEL = /total|amount|jumlah|paid|dibayar/i;
-const MERCHANT_LABEL = /^(?:merchant(?: name)?|paid to|pay to|payee|recipient|penerima|peniaga|dibayar kepada|to)\b\s*[:\-]?\s*(.*)$/i;
+// "Recipient reference" is a note, not the payee, so "recipient" must not be followed by "reference".
+const MERCHANT_LABEL = /^(?:merchant(?: name)?|paid to|pay to|payee|transfer(?:red)? to|receiver|recipient(?! ref)(?: name)?|penerima(?! ref)|peniaga|dibayar kepada|to)\b\s*[:\-]?\s*(.*)$/i;
+const NOTE_LABEL = /^(?:recipient reference|remarks?|note|payment details?|catatan|rujukan penerima)\b\s*[:\-]?\s*(.*)$/i;
+// Lines that are labels on these screens, so a label is never read as another label's value.
+const ANY_LABEL = /^(?:merchant(?: name)?|paid to|pay to|payee|transfer(?:red)? to|receiver|recipient(?: name| reference)?|remarks?|note|date ?(?:&|and) ?time|transaction (?:date|id|no\.?|number|time)|payment time|ref(?:erence)?(?: id| no\.?)?|order (?:id|no\.?)|to)\s*:?$/i;
 const NOT_A_MERCHANT = /^(?:payment|you paid|total|view more|transaction|order)\b/i;
-const REFERENCE_LABEL = /^(?:transaction (?:id|no\.?|number)|order (?:id|no\.?)|reference(?: no\.?| number)?|ref(?:\.| no\.?)|no\.? rujukan|id transaksi)\s*[:\-]?\s*(.*)$/i;
-const SUCCESS = /success|successful|berjaya|completed|payment made|paid/i;
+const REFERENCE_LABEL = /^(?:transaction (?:id|no\.?|number)|order (?:id|no\.?)|reference(?: no\.?| number| id)?|ref(?:\.| no\.?| id)|no\.? rujukan|id transaksi)\s*[:\-]?\s*(.*)$/i;
+const SUCCESS = /success|successful|berjaya|completed|payment made|paid|transferred/i;
+// A wrapped all-caps name, such as "AHMAD RUSYAIDI BIN" then "DARAZAKI".
+const CAPS_WORD = /^[A-Z][A-Z'@.-]+$/;
 const MONEY = /(?:RM|MYR)\s*-?\s*(\d[\d,]*(?:\.\d{1,2})?)/i;
 const LOOKS_LIKE_VALUE = /^[A-Z0-9-]{8,}$/i;
 
@@ -32,13 +38,33 @@ const labelled = (lines, pattern) => {
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(pattern);
     if (!match) continue;
-    if (match[1]) return match[1].trim();
-    if (lines[i + 1]) return lines[i + 1];
+    let value = match[1]?.trim();
+    let at = i;
+    if (!value) {
+      // When the screen text lists labels first and values later, the next line is another label, so give up.
+      if (!lines[i + 1] || ANY_LABEL.test(lines[i + 1])) continue;
+      value = lines[i + 1];
+      at = i + 1;
+    }
+    const next = lines[at + 1];
+    if (value === value.toUpperCase() && /[A-Z]/.test(value) && next && CAPS_WORD.test(next) && !ANY_LABEL.test(next) && !/^DUITNOW/.test(next)) {
+      value = `${value} ${next}`;
+    }
+    return value;
   }
   return null;
 };
 
-/** Reads on-screen text from a ShopeePay payment receipt. */
+/** Which app the receipt came from, judged from its text. Null means unknown, which is treated as ShopeePay. */
+export function detectWallet(text) {
+  const t = String(text || '');
+  if (/touch\s*['’]?\s*n\s*['’]?\s*go|\btng\b/i.test(t)) return 'TNG eWallet';
+  if (/aeon/i.test(t) || (/recipient reference/i.test(t) && /new transfer|share receipt/i.test(t))) return 'AEON Bank';
+  if (/shopee/i.test(t)) return 'ShopeePay';
+  return null;
+}
+
+/** Reads on-screen text from a QR payment receipt in ShopeePay, AEON Bank or TNG eWallet. */
 export function parseReceipt(text) {
   const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
@@ -55,11 +81,15 @@ export function parseReceipt(text) {
   const named = labelled(lines, MERCHANT_LABEL)?.replace(/^[•·*\s-]+/, '').trim();
   const merchant = named && !NOT_A_MERCHANT.test(named) ? named : null;
   const reference = labelled(lines, REFERENCE_LABEL);
+  const note = labelled(lines, NOTE_LABEL);
   return {
     amount_sen: chosen.sen,
     merchant: merchant && !MONEY.test(merchant) ? merchant : null,
     reference: reference && LOOKS_LIKE_VALUE.test(reference) ? reference : null,
     confirmed: SUCCESS.test(text),
+    wallet: detectWallet(text),
+    // The payer's own note, such as "Reclub Session", becomes the purchase's What field.
+    note: note && !MONEY.test(note) && !LOOKS_LIKE_VALUE.test(note) ? note.slice(0, 120) : null,
   };
 }
 

@@ -1,4 +1,4 @@
-import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
+import { detectWallet, parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
 import { authenticate, login, logout } from './auth.js';
 import { cleanShares, groupOwed, splitHint, usualFood } from '../public/split.js';
 import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
@@ -33,7 +33,7 @@ async function ensureSchema(env) {
   schemaReady = true;
 }
 
-const PLACEHOLDER_MERCHANTS = new Set(['apple pay', 'shopeepay qr']);
+const PLACEHOLDER_MERCHANTS = new Set(['apple pay', 'shopeepay qr', 'aeon bank qr', 'tng ewallet qr']);
 const UNFINISHED_PAYMENT = /pending|processing|failed|unsuccessful|gagal|menunggu/i;
 
 const saveCategory = (env, merchant, category) => env.DB.prepare(
@@ -85,8 +85,10 @@ async function isDuplicate(env, t) {
   return Boolean(hit);
 }
 
-const shopeeCandidate = (amount_sen, merchant, reference) => ({
-  amount_sen, source: 'shopeepay_qr', merchant: merchant || 'ShopeePay QR', reference: reference ?? null,
+// All QR scans share the shopeepay_qr source. The app they came from is kept in card.
+const shopeeCandidate = (amount_sen, merchant, reference, wallet) => ({
+  amount_sen, source: 'shopeepay_qr', card: wallet ?? null,
+  merchant: merchant || `${wallet ?? 'ShopeePay'} QR`, reference: reference ?? null,
 });
 
 const REFUND_TYPE = /refund|return|revers|void|cancel|credit/i;
@@ -147,7 +149,8 @@ async function ingest(request, env) {
 
   if (body.source === 'shopeepay_qr') {
     const parsed = parseReceipt(body.text);
-    if (parsed && await isDuplicate(env, shopeeCandidate(parsed.amount_sen, parsed.merchant, parsed.reference))) {
+    const wallet = parsed?.wallet ?? detectWallet(body.text);
+    if (parsed && await isDuplicate(env, shopeeCandidate(parsed.amount_sen, parsed.merchant, parsed.reference, wallet))) {
       return text(`Already logged ${formatRM(parsed.amount_sen)}`);
     }
     const complete = parsed?.merchant && parsed.confirmed;
@@ -156,7 +159,7 @@ async function ingest(request, env) {
     if (!amount_sen) return text('No payment found on this screen. Nothing was logged.', 422);
 
     const merchant = parsed?.merchant || rescue?.merchant || null;
-    const candidate = shopeeCandidate(amount_sen, merchant, parsed?.reference);
+    const candidate = shopeeCandidate(amount_sen, merchant, parsed?.reference, wallet);
     if (!parsed && await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(amount_sen)}`);
     if (parsed && merchant !== parsed.merchant && await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(amount_sen)}`);
 
@@ -165,7 +168,7 @@ async function ingest(request, env) {
       && (parsed.confirmed || rescue.paid) && !UNFINISHED_PAYMENT.test(body.text);
     const unsure = !complete && !rescued;
     const row = await insert(env, {
-      ...candidate, item: cleanItem(body.item), needs_review: unsure ? 1 : 0,
+      ...candidate, item: cleanItem(body.item) ?? parsed?.note ?? null, needs_review: unsure ? 1 : 0,
       category: merchant ? await categoryFor(env, merchant, rescue?.category) : 'Other',
       // Screen text is only kept when it's needed to fix a misread.
       raw_text: unsure ? String(body.text).slice(0, 4000) : null,
@@ -234,7 +237,7 @@ async function loadHome(env, view, date) {
   const period = payPeriod(date).start;
   const previous = previousRange(view, start, end, today);
   const [{ results }, income, commitments, spentToday, budget, defaultBudget, previousSpend, latestQr, owed] = await Promise.all([
-    env.DB.prepare('SELECT amount_sen, category, source, local_date FROM transactions WHERE local_date BETWEEN ? AND ?').bind(start, end).all(),
+    env.DB.prepare('SELECT amount_sen, category, source, card, local_date FROM transactions WHERE local_date BETWEEN ? AND ?').bind(start, end).all(),
     getIncome(env, period),
     getCommitments(env, period),
     env.DB.prepare('SELECT COALESCE(SUM(amount_sen), 0) AS total FROM transactions WHERE local_date = ?').bind(today).first(),
