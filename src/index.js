@@ -2,7 +2,7 @@ import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey
 import { authenticate, login, logout } from './auth.js';
 import { cleanShares, groupOwed, splitHint, usualFood } from '../public/split.js';
 import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
-import { CATEGORIES, addDays, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
+import { CATEGORIES, addDays, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -530,10 +530,6 @@ async function api(request, env, url) {
   }
   if (path === '/api/budget' && method === 'POST') return setBudget(request, env, date);
   if (path === '/api/income' && method === 'POST') return setIncome(request, env);
-  if (path === '/api/report' && method === 'GET') {
-    const report = reportText(await loadSummary(env, date));
-    return text(date === localDate() ? `${report} Anything missing? Open KiraDuit to add it.` : report);
-  }
   if (path === '/api/default-budget' && method === 'POST') return setDefaultBudget(request, env);
   if (path === '/api/export' && method === 'GET') return exportCsv(env);
   if (path === '/api/commitments' && method === 'POST') return addCommitment(request, env);

@@ -2,7 +2,7 @@
 
 A daily spending tracker for iPhone. ShopeePay QR and Apple Pay payments are logged automatically to one dashboard, which installs on your Home Screen like an app.
 
-**Contents:** [Setup](#1-setup) · [Install](#2-install-on-iphone) · [Log payments](#3-log-payments) · [Daily routine](#4-daily-routine) · [Using the app](#5-using-the-app) · [Tips](#tips)
+**Contents:** [Setup](#1-setup) · [Install](#2-install-on-iphone) · [Log payments](#3-log-payments) · [Using the app](#4-using-the-app) · [Tips](#tips)
 
 ## 1. Setup
 
@@ -89,26 +89,9 @@ KiraDuit offers a photo prompt for 30 minutes after a QR purchase, and you can a
    - **Get Contents of URL**: `https://YOUR-ADDRESS/api/receipts/latest`, with `image` = the Base64 result
    - **Show Notification** (body: Contents of URL)
 
-## 4. Daily routine
+## 4. Using the app
 
-Create both in Shortcuts > Automation > New Automation > **Time of Day**. Choose **Daily** and **Run Immediately**.
-
-**8:00 am: set today's budget**
-
-1. **Ask for Input**: type Number, prompt "Today's budget?"
-2. **Get Contents of URL**: `https://YOUR-ADDRESS/api/budget`, with `amount` = Provided Input
-3. **Show Notification** (body: Contents of URL)
-
-**10:30 pm: today's summary**
-
-1. **Get Contents of URL**: `https://YOUR-ADDRESS/api/report`, method **GET**, same `Authorization` header
-2. **Show Notification** (body: Contents of URL)
-
-If you skip the 8 am prompt, KiraDuit uses your default budget, or your can-spend-per-day amount if you haven't set one.
-
-## 5. Using the app
-
-- **Budget:** set or change today's budget on the Home screen. The screen turns reddish once today's spending passes it.
+- **Budget:** set or change today's budget on the Home screen. If you don't, KiraDuit uses your default budget, or your can-spend-per-day amount if you haven't set one. The screen turns reddish once today's spending passes it.
 - **Receipts:** every logged payment shows a "Logged" notification. If you don't see one, the payment wasn't saved, so add it by hand.
 - **Checking:** anything the scan isn't sure about appears as "Tap to check".
 - **Categories:** when you change a merchant's category, future purchases there use it.
