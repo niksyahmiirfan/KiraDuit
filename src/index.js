@@ -91,7 +91,11 @@ const REFUND_TYPE = /refund|return|revers|void|cancel|credit/i;
 const REFUND_WINDOW_DAYS = 30;
 const MINUS = /^\s*[-\u2212(]/;
 
+// Name can hold a card or merchant name, so "credit" isn't treated as a refund there.
+const REFUND_NAME = /\b(?:refund|return|reversal|void|cancel)/i;
+
 const isRefund = (body) => REFUND_TYPE.test(String(body.type ?? '')) || MINUS.test(String(body.amount ?? ''))
+  || (body.merchant && REFUND_NAME.test(String(body.name ?? '')))
   || (typeof body.amount === 'number' && body.amount < 0);
 
 /** A refunded Apple Pay purchase wasn't spending, so the matching logged purchase is removed. */

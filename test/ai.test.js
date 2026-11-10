@@ -255,3 +255,11 @@ test('an unmatched refund changes nothing', async () => {
   assert.match(await res.text(), /didn't match/);
   assert.equal(rows().length, 1);
 });
+
+test('a refund named in the Name field is recognised, but a credit card name is not', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell', name: 'RHB Credit Card' });
+  assert.equal(rows().length, 1);
+  await post('/api/ingest', { source: 'apple_pay', amount: 'MYR 50.00', merchant: 'Shell', name: 'Refund' });
+  assert.equal(rows().length, 0);
+});

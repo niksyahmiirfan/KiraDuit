@@ -53,7 +53,7 @@ In Shortcuts > Automation > New Automation, choose **Wallet** (called **Transact
 
 This runs on in-store taps. In-app or online Apple Pay purchases may need adding by hand.
 
-**Refunds:** if the automation also runs for a refund, KiraDuit removes the matching purchase, meaning the same merchant and amount within 30 days. It recognises a refund from a minus sign on the amount, or from a `type` field containing "refund". If Shortcut Input offers a property for the transaction type, add it to the request as `type`. Partial refunds that don't match a purchase change nothing, so remove or edit those by hand.
+**Refunds:** if the automation also runs for a refund, KiraDuit removes the matching purchase, meaning the same merchant and amount within 30 days. It recognises a refund from a minus sign on the amount, or from the word "refund" in the transaction's Name. To pass that on, add a field `name` = Shortcut Input > Name to the request. Partial refunds that don't match a purchase change nothing, so remove or edit those by hand.
 
 ### Ask what you bought (optional)
 
