@@ -16,6 +16,10 @@ const dayName = (d, opts) => new Intl.DateTimeFormat('en-MY', { timeZone: 'UTC',
 let date = localDate();
 let summary = null;
 let selected = null;
+// Purchase list page on Day. null means "show the page holding the selected purchase".
+let buyPage = 0;
+let buyPageDate = null;
+const BUYS_PER_PAGE = 5;
 let page = 'home';
 let range = store.get('kd-range') === 'month' ? 'month' : 'week';
 let homeDate = localDate();
@@ -204,6 +208,7 @@ const ICONS = {
   day: '<rect x="4" y="5.5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/><path d="M8 14h3v3H8z"/>',
   links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
+  receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 const TABS = [['home', 'Home'], ['day', 'Day'], ['links', 'Shortcuts']];
@@ -390,13 +395,28 @@ function render() {
       <p class="readout">${dayName(date, { month: 'long' })} so far: ${formatRM(s.monthTotal)}</p>
     </section>
     <section><h2>Purchases</h2>
-      ${s.count ? [...s.transactions].reverse().map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
-        <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
-        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? ', receipt' : ''}</small></button>`).join('')
-    : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
+      ${s.count ? purchaseList(s) : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
     </section>
     ${dock()}`;
   setOver(Boolean(s.budget) && s.total > s.budget);
+}
+
+function purchaseList(s) {
+  const all = [...s.transactions].reverse();
+  const pages = Math.ceil(all.length / BUYS_PER_PAGE);
+  if (buyPageDate !== date) { buyPage = 0; buyPageDate = date; }
+  if (buyPage === null) buyPage = Math.max(0, Math.floor(all.findIndex((t) => t.id === selected) / BUYS_PER_PAGE));
+  buyPage = Math.min(Math.max(buyPage, 0), pages - 1);
+  const first = buyPage * BUYS_PER_PAGE;
+  const shown = all.slice(first, first + BUYS_PER_PAGE);
+  const rows = shown.map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
+        <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
+        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? `<span class="receipt-mark" role="img" aria-label="Receipt attached" title="Receipt attached">${icon('receipt')}</span>` : ''}</small></button>`).join('');
+  if (pages < 2) return rows;
+  return `${rows}<nav class="pager" aria-label="Purchase pages">
+    <button data-buy-page="-1" aria-label="Newer purchases" ${buyPage === 0 ? 'disabled' : ''}>‹</button>
+    <span aria-live="polite">${first + 1}–${first + shown.length} of ${all.length}</span>
+    <button data-buy-page="1" aria-label="Older purchases" ${buyPage === pages - 1 ? 'disabled' : ''}>›</button></nav>`;
 }
 
 let sheetPurchase = null;
@@ -673,7 +693,8 @@ app.addEventListener('click', (e) => {
   else if (d.shift) { homeDate = Number(d.shift) < 0 ? addDays(home.start, -1) : addDays(home.end, 1); refresh(); }
   else if (d.budget) openAmountSheet({ title: d.budget === localDate() ? "Today's budget" : `Budget for ${shortDate(d.budget)}`, label: 'Budget (RM)', action: 'Save budget', value: (page === 'home' ? home.todayBudgetSource : summary.budgetSource) === 'set' ? (page === 'home' ? home.todayBudget : summary.budget) : null, save: (v) => api.setBudget(d.budget, v) });
   else if (d.income !== undefined) openAmountSheet({ title: 'Monthly income', label: 'Income received on the 27th (RM)', action: 'Save income', value: home.income, save: (v) => api.setIncome(v) });
-  else if (d.tick) { selected = nextTick(el, e.detail === 0); render(); }
+  else if (d.tick) { selected = nextTick(el, e.detail === 0); buyPage = null; render(); }
+  else if (d.buyPage) { buyPage += Number(d.buyPage); render(); }
   else if (d.edit) openSheet(summary.transactions.find((t) => t.id === d.edit));
   else if (d.add !== undefined) openSheet(null);
   else if (d.receiptTake) { receiptTarget = d.receiptTake; receiptInput.click(); }
