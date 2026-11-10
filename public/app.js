@@ -16,6 +16,10 @@ const dayName = (d, opts) => new Intl.DateTimeFormat('en-MY', { timeZone: 'UTC',
 let date = localDate();
 let summary = null;
 let selected = null;
+// Purchase list page on Day. null means "show the page holding the selected purchase".
+let buyPage = 0;
+let buyPageDate = null;
+const BUYS_PER_PAGE = 5;
 let page = 'home';
 let range = store.get('kd-range') === 'month' ? 'month' : 'week';
 let homeDate = localDate();
@@ -106,10 +110,11 @@ const api = DEMO ? {
   removeCommitment: async (id) => { demoCommitments = demoCommitments.filter((c) => c.id !== id); },
   update: async (id, f) => {
     const t = demoTxs.find((x) => x.id === id);
-    Object.assign(t, { merchant: f.merchant, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), needs_review: 0, local_date: f.date, occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString() });
+    Object.assign(t, { merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), needs_review: 0, local_date: f.date, occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString() });
   },
   remove: async (id) => demoTxs.splice(demoTxs.findIndex((x) => x.id === id), 1),
-  add: async (f) => demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }),
+  draft: async (text) => ({ skipped: 0, items: [...text.matchAll(/([^,\d]+?)\s*(\d+(?:\.\d{1,2})?)/g)].map((m) => ({ item: m[1].replace(/^\s*,?\s*/, '').trim(), merchant: (text.match(/\bat\s+(.+)$/i) || [])[1]?.trim() || '', amount_sen: toSen(m[2]), category: 'Food' })) }),
+  add: async (f) => demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }),
 } : {
   load: (d) => request(`/api/summary?date=${d}`),
   loadHome: (view, d) => request(`/api/home?view=${view}&date=${d}`),
@@ -128,6 +133,7 @@ const api = DEMO ? {
   update: (id, f) => request(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(f) }),
   remove: (id) => request(`/api/transactions/${id}`, { method: 'DELETE' }),
   add: (f) => request('/api/transactions', { method: 'POST', body: JSON.stringify(f) }),
+  draft: (text) => request('/api/draft', { method: 'POST', body: JSON.stringify({ text }) }),
 };
 
 /* ---- views ---- */
@@ -166,17 +172,19 @@ function verdict(s) {
   return `<p class="verdict">${n}${compare}</p>`;
 }
 
+const spentAt = (t) => `${formatRM(t.amount_sen)}${t.item ? ` for ${t.item}` : ''} at ${t.merchant}`;
+
 const ribbon = (s) => {
   if (!s.count) return '';
   const max = s.largest.amount_sen;
   const ticks = s.transactions.map((t) => {
     const h = Math.max(10, Math.round((t.amount_sen / max) * 68));
     return `<button class="tick" data-tick="${esc(t.id)}" aria-pressed="${t.id === selected}" style="left:${(minutesInto(t.occurred_at) / 1440) * 100}%"
-      aria-label="${esc(`${formatRM(t.amount_sen)} at ${t.merchant}, ${time(t.occurred_at)}`)}"><i style="height:${h}px"></i></button>`;
+      aria-label="${esc(`${spentAt(t)}, ${time(t.occurred_at)}`)}"><i style="height:${h}px"></i></button>`;
   }).join('');
   const pick = s.transactions.find((t) => t.id === selected);
-  const line = pick ? `${formatRM(pick.amount_sen)} at ${pick.merchant}, ${time(pick.occurred_at)}`
-    : `Largest was ${formatRM(max)} at ${s.largest.merchant}, ${time(s.largest.occurred_at)}`;
+  const line = pick ? `${spentAt(pick)}, ${time(pick.occurred_at)}`
+    : `Largest was ${spentAt(s.largest)}, ${time(s.largest.occurred_at)}`;
   return `<div class="ribbon"><div class="ribbon-track">${ticks}</div>
     <div class="hours"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span></div>
     <p class="readout" aria-live="polite">${esc(line)}</p></div>`;
@@ -219,6 +227,7 @@ const ICONS = {
   day: '<rect x="4" y="5.5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/><path d="M8 14h3v3H8z"/>',
   links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
+  receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 const TABS = [['home', 'Home'], ['day', 'Day'], ['links', 'Shortcuts']];
@@ -316,7 +325,7 @@ const RECEIPT_PROMPT_MS = 30 * 60 * 1000;
 
 function receiptPrompt(t) {
   if (!t || Date.now() - new Date(t.occurred_at).getTime() > RECEIPT_PROMPT_MS || store.get('kd-no-receipt') === t.id) return '';
-  return `<div class="receipt-card"><p>Add a receipt for ${formatRM(t.amount_sen)} at ${esc(t.merchant)}?</p>
+  return `<div class="receipt-card"><p>Add a receipt for ${esc(spentAt(t))}?</p>
     <div><button data-receipt-take="${esc(t.id)}">Take photo</button><button data-receipt-skip="${esc(t.id)}">Skip</button></div></div>`;
 }
 
@@ -365,9 +374,9 @@ function renderHome() {
 }
 
 const APPS = [
-  { mark: 'TNG', name: "Touch 'n Go eWallet", href: 'shortcuts://run-shortcut?name=Open%20TNG' },
-  { mark: 'SP', name: 'ShopeePay', href: 'shopeepaymy://' },
-  { mark: 'MAE', name: 'MAE by Maybank2u', href: 'shortcuts://run-shortcut?name=Open%20MAE' },
+  { logo: 'tng', name: "Touch 'n Go eWallet", href: 'shortcuts://run-shortcut?name=Open%20TNG' },
+  { logo: 'spay', name: 'ShopeePay', href: 'shopeepaymy://' },
+  { logo: 'mae', name: 'MAE by Maybank2u', href: 'shortcuts://run-shortcut?name=Open%20MAE' },
 ];
 
 function renderLinks() {
@@ -375,14 +384,8 @@ function renderLinks() {
     <h1 class="links-title">Shortcuts</h1>
     <p class="links-intro">Open an app to pay.</p>
     <div class="link-list">
-      ${APPS.map((a) => `<a class="app-link" href="${a.href}"><span class="app-mark" aria-hidden="true">${a.mark}</span><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
+      ${APPS.map((a) => `<a class="app-link" href="${a.href}"><img class="app-mark" src="/icons/app-${a.logo}.png" alt="" width="52" height="52"><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
     </div>
-    <section><details><summary>Set up TNG and MAE</summary>
-      <p class="hint">These two apps need a small iPhone Shortcut to open from here. You only do this once.</p>
-      <ol class="steps"><li>In the Shortcuts app, create a shortcut with one action: Open App, then choose Touch 'n Go eWallet.</li>
-      <li>Name it exactly <strong>Open TNG</strong>.</li>
-      <li>Do the same for MAE and name it exactly <strong>Open MAE</strong>.</li></ol>
-    </details></section>
     ${dock()}`;
 }
 
@@ -411,13 +414,28 @@ function render() {
       <p class="readout">${dayName(date, { month: 'long' })} so far: ${formatRM(s.monthTotal)}</p>
     </section>
     <section><h2>Purchases</h2>
-      ${s.count ? [...s.transactions].reverse().map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
-        <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
-        <small>${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? ', receipt' : ''}</small></button>`).join('')
-    : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
+      ${s.count ? purchaseList(s) : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
     </section>
     ${dock()}`;
   setOver(Boolean(s.budget) && s.total > s.budget);
+}
+
+function purchaseList(s) {
+  const all = [...s.transactions].reverse();
+  const pages = Math.ceil(all.length / BUYS_PER_PAGE);
+  if (buyPageDate !== date) { buyPage = 0; buyPageDate = date; }
+  if (buyPage === null) buyPage = Math.max(0, Math.floor(all.findIndex((t) => t.id === selected) / BUYS_PER_PAGE));
+  buyPage = Math.min(Math.max(buyPage, 0), pages - 1);
+  const first = buyPage * BUYS_PER_PAGE;
+  const shown = all.slice(first, first + BUYS_PER_PAGE);
+  const rows = shown.map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
+        <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
+        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? `<span class="receipt-mark" role="img" aria-label="Receipt attached" title="Receipt attached">${icon('receipt')}</span>` : ''}</small></button>`).join('');
+  if (pages < 2) return rows;
+  return `${rows}<nav class="pager" aria-label="Purchase pages">
+    <button data-buy-page="-1" aria-label="Newer purchases" ${buyPage === 0 ? 'disabled' : ''}>‹</button>
+    <span aria-live="polite">${first + 1}–${first + shown.length} of ${all.length}</span>
+    <button data-buy-page="1" aria-label="Older purchases" ${buyPage === pages - 1 ? 'disabled' : ''}>›</button></nav>`;
 }
 
 let sheetPurchase = null;
@@ -488,9 +506,13 @@ function openSheet(t) {
   const when = t ? localParts(t.occurred_at) : { date: defaultDate, time: defaultDate === today ? localParts(new Date().toISOString()).time : '12:00' };
   sheet.innerHTML = `<form method="dialog">
     <h2>${t ? 'Edit purchase' : 'Add purchase'}</h2>
+    ${t ? '' : `<div class="quick"><label>Quick add<textarea id="quick-note" rows="2" maxlength="500" placeholder="Teh ais 1.50, roti canai 2 at Mamak XYZ"></textarea></label>
+    <p class="error" id="quick-error" hidden></p>
+    <button type="button" class="text-action" data-draft>Read this</button></div>`}
     ${fromReceipt ? '<p class="error">Check these details against your receipt.</p>' : ''}
     <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${t ? (t.amount_sen / 100).toFixed(2) : ''}"></label>
-    <label>Where<input name="merchant" required value="${t ? esc(t.merchant) : ''}"></label>
+    <label>Where<input name="merchant" required maxlength="120" placeholder="Mamak XYZ" value="${t ? esc(t.merchant) : ''}"></label>
+    <label>What <span class="optional">(optional)</span><input name="item" maxlength="120" placeholder="Teh Ais" value="${t?.item ? esc(t.item) : ''}"></label>
     <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${(t?.category || 'Food') === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
     <div class="two"><label>Date<input name="date" type="date" required max="${today}" value="${when.date}"></label>
     <label>Time<input name="time" type="time" required value="${when.time}"></label></div>
@@ -512,10 +534,79 @@ function openSheet(t) {
     } catch (err) { fail(err); }
   };
   form.querySelector('[data-close]')?.addEventListener('click', () => sheet.close());
+  form.querySelector('[data-draft]')?.addEventListener('click', async (e) => {
+    const button = e.currentTarget;
+    const error = form.querySelector('#quick-error');
+    error.hidden = true;
+    button.disabled = true;
+    button.textContent = 'Reading…';
+    try {
+      openDraftSheet(await api.draft(form.querySelector('#quick-note').value), form.elements.date.value);
+    } catch (err) {
+      error.hidden = false;
+      error.textContent = err.message;
+      button.disabled = false;
+      button.textContent = 'Read this';
+    }
+  });
   form.querySelector('[data-del]')?.addEventListener('click', async () => {
     try { await api.remove(t.id); sheet.close(); refresh(); } catch (err) { fail(err); }
   });
   sheet.showModal();
+}
+
+// Nothing from Quick add is saved until it's confirmed here.
+function openDraftSheet({ items, skipped }, draftDate) {
+  const today = localDate();
+  const label = (n) => `Add ${n} purchase${n === 1 ? '' : 's'}`;
+  sheet.innerHTML = `<form method="dialog"><h2>Check these</h2>
+    ${skipped ? `<p class="hint">${skipped} item${skipped === 1 ? '' : 's'} had no clear price and ${skipped === 1 ? 'was' : 'were'} left out.</p>` : ''}
+    <div class="drafts">${items.map((d) => `<fieldset class="draft">
+      <div class="two"><label>What<input name="item" maxlength="120" value="${esc(d.item || '')}"></label>
+      <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${(d.amount_sen / 100).toFixed(2)}"></label></div>
+      <label>Where<input name="merchant" required maxlength="120" placeholder="Where you bought it" value="${esc(d.merchant || '')}"></label>
+      <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${d.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <button type="button" class="text-action" data-draft-remove>Remove</button></fieldset>`).join('')}</div>
+    <label>Date<input name="date" type="date" required max="${today}" value="${draftDate}"></label>
+    <p class="error" hidden></p>
+    <div class="actions"><button type="button" class="quiet" data-close>Cancel</button><button class="primary">${label(items.length)}</button></div></form>`;
+  const form = sheet.querySelector('form');
+  const rows = () => [...form.querySelectorAll('.draft')];
+  const primary = form.querySelector('.primary');
+  form.querySelector('[data-close]').onclick = () => sheet.close();
+  // Typing a place fills the other empty Where fields, since a note is usually from one shop.
+  form.querySelector('.drafts').addEventListener('change', (e) => {
+    if (e.target.name !== 'merchant' || !e.target.value.trim()) return;
+    form.querySelectorAll('.draft [name="merchant"]').forEach((input) => { if (!input.value.trim()) input.value = e.target.value; });
+  });
+  form.querySelector('.drafts').addEventListener('click', (e) => {
+    if (!e.target.matches('[data-draft-remove]')) return;
+    e.target.closest('.draft').remove();
+    if (!rows().length) return sheet.close();
+    primary.textContent = label(rows().length);
+  });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const when = form.elements.date.value;
+    const time = when === today ? localParts(new Date().toISOString()).time : '12:00';
+    primary.disabled = true;
+    try {
+      // Saved rows leave the list, so retrying after an error can't add them twice.
+      for (const row of rows()) {
+        const value = (name) => row.querySelector(`[name="${name}"]`).value;
+        await api.add({ amount: value('amount'), merchant: value('merchant'), item: value('item'), category: value('category'), date: when, time });
+        row.remove();
+      }
+      sheet.close();
+      if (page === 'day') { date = when; selected = null; }
+      refresh();
+    } catch (err) {
+      const p = form.querySelector('.error'); p.hidden = false; p.textContent = err.message;
+      primary.disabled = false;
+      primary.textContent = label(rows().length);
+    }
+  };
+  if (!sheet.open) sheet.showModal();
 }
 
 function openAmountSheet({ title, label, value, action, save, hint, optional }) {
@@ -620,7 +711,8 @@ app.addEventListener('click', (e) => {
   else if (d.shift) { homeDate = Number(d.shift) < 0 ? addDays(home.start, -1) : addDays(home.end, 1); refresh(); }
   else if (d.budget) openAmountSheet({ title: d.budget === localDate() ? "Today's budget" : `Budget for ${shortDate(d.budget)}`, label: 'Budget (RM)', action: 'Save budget', value: (page === 'home' ? home.todayBudgetSource : summary.budgetSource) === 'set' ? (page === 'home' ? home.todayBudget : summary.budget) : null, save: (v) => api.setBudget(d.budget, v) });
   else if (d.income !== undefined) openAmountSheet({ title: 'Monthly income', label: 'Income received on the 27th (RM)', action: 'Save income', value: home.income, save: (v) => api.setIncome(v) });
-  else if (d.tick) { selected = nextTick(el, e.detail === 0); render(); }
+  else if (d.tick) { selected = nextTick(el, e.detail === 0); buyPage = null; render(); }
+  else if (d.buyPage) { buyPage += Number(d.buyPage); render(); }
   else if (d.edit) openSheet(summary.transactions.find((t) => t.id === d.edit));
   else if (d.add !== undefined) openSheet(null);
   else if (d.receiptTake) { receiptTarget = d.receiptTake; receiptInput.click(); }
@@ -644,9 +736,35 @@ sheet.addEventListener('click', async (e) => {
 });
 sheet.addEventListener('close', () => { if (page !== 'links') refresh(); });
 // Picks up new purchases when you return from ShopeePay.
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !sheet.open) refresh(); });
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden || sheet.open) return;
+  if (await newVersionLive()) location.reload();
+  else refresh();
+});
 
-if (!DEMO && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// The Home Screen app can stay in memory for days, so check for a new deploy when it's reopened.
+let loadedVersion = null;
+async function liveVersion() {
+  try {
+    const res = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
+    return res.ok ? res.headers.get('etag') : null;
+  } catch { return null; }
+}
+async function newVersionLive() {
+  if (DEMO) return false;
+  const live = await liveVersion();
+  return Boolean(loadedVersion && live && live !== loadedVersion);
+}
+
+if (!DEMO) {
+  liveVersion().then((v) => { loadedVersion = v; });
+  if ('serviceWorker' in navigator) {
+    // A replaced service worker means an older app may be on screen. First installs have no controller and don't reload.
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !sheet.open) location.reload(); });
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+}
 
 // Earlier versions kept the access key in this browser. Trade it for a session once, then delete it.
 async function start() {

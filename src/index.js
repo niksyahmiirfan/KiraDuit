@@ -1,5 +1,6 @@
 import { parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
 import { authenticate, login, logout } from './auth.js';
+import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
 import { CATEGORIES, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, reportText, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
@@ -10,10 +11,38 @@ const text = (body, status = 200) =>
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
 
-async function categoryFor(env, merchant) {
-  const saved = await env.DB.prepare('SELECT category FROM merchant_categories WHERE merchant_key = ?')
-    .bind(merchantKey(merchant)).first();
-  return saved?.category || guessCategory(merchant);
+// Databases created before the item field existed get the column added once, on first use.
+let schemaReady = false;
+async function ensureSchema(env) {
+  if (schemaReady) return;
+  const { results } = await env.DB.prepare('PRAGMA table_info(transactions)').all();
+  if (!results.some((c) => c.name === 'item')) {
+    await env.DB.prepare('ALTER TABLE transactions ADD COLUMN item TEXT').run().catch((e) => {
+      if (!/duplicate column/i.test(String(e?.message))) throw e;
+    });
+  }
+  schemaReady = true;
+}
+
+const PLACEHOLDER_MERCHANTS = new Set(['apple pay', 'shopeepay qr']);
+const UNFINISHED_PAYMENT = /pending|processing|failed|unsuccessful|gagal|menunggu/i;
+
+const saveCategory = (env, merchant, category) => env.DB.prepare(
+  `INSERT INTO merchant_categories (merchant_key, category) VALUES (?, ?)
+   ON CONFLICT (merchant_key) DO UPDATE SET category = excluded.category`,
+).bind(merchantKey(merchant), category).run();
+
+/** Your saved choice wins, then the keyword list, then a model guess that's saved for next time. */
+async function categoryFor(env, merchant, hint) {
+  const key = merchantKey(merchant);
+  const saved = await env.DB.prepare('SELECT category FROM merchant_categories WHERE merchant_key = ?').bind(key).first();
+  if (saved) return saved.category;
+  const guess = guessCategory(merchant);
+  if (guess !== 'Other' || PLACEHOLDER_MERCHANTS.has(key) || !aiEnabled(env)) return guess;
+  const suggested = hint || (await suggestCategory(env, merchant));
+  if (!suggested) return guess;
+  await saveCategory(env, merchant, suggested);
+  return suggested;
 }
 
 async function insert(env, t) {
@@ -22,15 +51,15 @@ async function insert(env, t) {
     id: crypto.randomUUID(),
     occurred_at: now.toISOString(),
     local_date: localDate(now),
-    card: null, reference: null, raw_text: null, needs_review: 0,
+    card: null, item: null, reference: null, raw_text: null, needs_review: 0,
     ...t,
     category: t.category || (await categoryFor(env, t.merchant)),
   };
   row.occurred_at = now.toISOString();
   await env.DB.prepare(
-    `INSERT INTO transactions (id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review, reference, raw_text)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-  ).bind(row.id, row.amount_sen, row.merchant, row.category, row.source, row.card, row.occurred_at,
+    `INSERT INTO transactions (id, amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review, reference, raw_text)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(row.id, row.amount_sen, row.merchant, row.item, row.category, row.source, row.card, row.occurred_at,
     row.local_date, row.needs_review, row.reference, row.raw_text).run();
   return row;
 }
@@ -47,17 +76,57 @@ async function isDuplicate(env, t) {
   return Boolean(hit);
 }
 
+const shopeeCandidate = (amount_sen, merchant, reference) => ({
+  amount_sen, source: 'shopeepay_qr', merchant: merchant || 'ShopeePay QR', reference: reference ?? null,
+});
+
+const REFUND_TYPE = /refund|return|revers|void|cancel|credit/i;
+const REFUND_WINDOW_DAYS = 30;
+const MINUS = /^\s*[-\u2212(]/;
+
+// Name can hold a card or merchant name, so "credit" isn't treated as a refund there.
+const REFUND_NAME = /\b(?:refund|return|reversal|void|cancel)/i;
+
+const isRefund = (body) => REFUND_TYPE.test(String(body.type ?? '')) || MINUS.test(String(body.amount ?? ''))
+  || (body.merchant && REFUND_NAME.test(String(body.name ?? '')))
+  || (typeof body.amount === 'number' && body.amount < 0);
+
+/** A refunded Apple Pay purchase wasn't spending, so the matching logged purchase is removed. */
+async function applyRefund(env, body) {
+  const raw = typeof body.amount === 'number' ? Math.abs(body.amount) : String(body.amount ?? '').replace(/[-\u2212()]/g, '');
+  const amount_sen = parseWalletAmount(raw);
+  if (!amount_sen) return text(`Could not read the refund amount "${body.amount ?? ''}". Nothing changed.`, 422);
+  const merchant = String(body.merchant || body.name || '').trim();
+  const since = new Date(Date.now() - REFUND_WINDOW_DAYS * 86400000).toISOString();
+  const { results } = await env.DB.prepare(
+    `SELECT id, merchant FROM transactions WHERE source = 'apple_pay' AND amount_sen = ? AND occurred_at >= ?
+     ORDER BY occurred_at DESC`,
+  ).bind(amount_sen, since).all();
+  const match = results.find((t) => merchant && merchantKey(t.merchant) === merchantKey(merchant));
+  if (!match) {
+    return text(`Refund of ${formatRM(amount_sen)}${merchant ? ` at ${merchant}` : ''} didn't match a logged purchase. Nothing changed.`);
+  }
+  await deleteTransaction(env, match.id);
+  return text(`Refund: removed ${formatRM(amount_sen)} at ${match.merchant}`);
+}
+
+const deleteTransaction = (env, id) => env.DB.batch([
+  env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(id),
+  env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(id),
+]);
+
 async function ingest(request, env) {
   const body = await request.json().catch(() => null);
   if (!body) return text('Could not read that request.', 400);
 
   if (body.source === 'apple_pay') {
+    if (isRefund(body)) return applyRefund(env, body);
     const amount_sen = parseWalletAmount(body.amount);
     if (!amount_sen) return text(`Could not read the amount "${body.amount ?? ''}". Nothing was logged.`, 422);
     const foreign = /[A-Z$€£¥]/i.test(String(body.amount)) && !/RM|MYR/i.test(String(body.amount));
     const merchant = String(body.merchant || body.name || '').trim();
     const row = await insert(env, {
-      amount_sen, source: 'apple_pay', merchant: merchant || 'Apple Pay',
+      amount_sen, source: 'apple_pay', merchant: merchant || 'Apple Pay', item: cleanItem(body.item),
       card: body.card ? String(body.card).slice(0, 80) : null,
       needs_review: foreign || !merchant ? 1 : 0,
     });
@@ -66,16 +135,26 @@ async function ingest(request, env) {
 
   if (body.source === 'shopeepay_qr') {
     const parsed = parseReceipt(body.text);
-    if (!parsed) return text('No payment found on this screen. Nothing was logged.', 422);
-    const candidate = {
-      amount_sen: parsed.amount_sen, source: 'shopeepay_qr',
-      merchant: parsed.merchant || 'ShopeePay QR', reference: parsed.reference,
-    };
-    if (await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(parsed.amount_sen)}`);
-    const unsure = !parsed.merchant || !parsed.confirmed;
+    if (parsed && await isDuplicate(env, shopeeCandidate(parsed.amount_sen, parsed.merchant, parsed.reference))) {
+      return text(`Already logged ${formatRM(parsed.amount_sen)}`);
+    }
+    const complete = parsed?.merchant && parsed.confirmed;
+    const rescue = complete ? null : await readReceipt(env, body.text);
+    const amount_sen = parsed?.amount_sen ?? (rescue?.paid ? rescue.amount_sen : null);
+    if (!amount_sen) return text('No payment found on this screen. Nothing was logged.', 422);
+
+    const merchant = parsed?.merchant || rescue?.merchant || null;
+    const candidate = shopeeCandidate(amount_sen, merchant, parsed?.reference);
+    if (!parsed && await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(amount_sen)}`);
+    if (parsed && merchant !== parsed.merchant && await isDuplicate(env, candidate)) return text(`Already logged ${formatRM(amount_sen)}`);
+
+    // The model only clears a flag when it agrees with the parser's amount and nothing on screen says otherwise.
+    const rescued = parsed && merchant && rescue?.amount_sen === parsed.amount_sen
+      && (parsed.confirmed || rescue.paid) && !UNFINISHED_PAYMENT.test(body.text);
+    const unsure = !complete && !rescued;
     const row = await insert(env, {
-      ...candidate, needs_review: unsure ? 1 : 0,
-      ...(parsed.merchant ? {} : { category: 'Other' }),
+      ...candidate, item: cleanItem(body.item), needs_review: unsure ? 1 : 0,
+      category: merchant ? await categoryFor(env, merchant, rescue?.category) : 'Other',
       // Screen text is only kept when it's needed to fix a misread.
       raw_text: unsure ? String(body.text).slice(0, 4000) : null,
     });
@@ -120,7 +199,7 @@ async function loadSummary(env, date) {
   const end = [...weekDates(date), date].sort().at(-1);
   const [{ results }, budget] = await Promise.all([
     env.DB.prepare(
-      `SELECT id, amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review,
+      `SELECT id, amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review,
          EXISTS (SELECT 1 FROM receipts WHERE transaction_id = transactions.id) AS has_receipt
        FROM transactions WHERE local_date BETWEEN ? AND ?`,
     ).bind(windowStart(date), end).all(),
@@ -218,7 +297,7 @@ async function removeCommitment(env, id) {
 }
 
 async function exportCsv(env) {
-  const { results } = await env.DB.prepare('SELECT amount_sen, merchant, category, source, card, occurred_at, local_date, needs_review FROM transactions').all();
+  const { results } = await env.DB.prepare('SELECT amount_sen, merchant, item, category, source, card, occurred_at, local_date, needs_review FROM transactions').all();
   return new Response(toCsv(results), {
     headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="kiraduit.csv"', 'cache-control': 'no-store' },
   });
@@ -238,6 +317,25 @@ const saveReceipt = (env, id, image) => env.DB.prepare(
   `INSERT INTO receipts (transaction_id, image, created_at) VALUES (?, ?, ?)
    ON CONFLICT (transaction_id) DO UPDATE SET image = excluded.image, created_at = excluded.created_at`,
 ).bind(id, image, new Date().toISOString()).run();
+
+const ITEM_WINDOW_MS = 10 * 60 * 1000;
+const cleanItem = (value) => String(value ?? '').trim().slice(0, 120) || null;
+
+/** Lets a Shortcut ask what you bought after logging, so dismissing the question never loses the purchase. */
+async function saveLatestItem(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const item = cleanItem(body.item);
+  if (!item) return text('Nothing to add.', 422);
+  if (!['apple_pay', 'shopeepay_qr', 'manual'].includes(body.source)) return text('Unknown payment source.', 400);
+  const since = new Date(Date.now() - ITEM_WINDOW_MS).toISOString();
+  const latest = await env.DB.prepare(
+    `SELECT id, amount_sen, merchant FROM transactions
+     WHERE source = ? AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT 1`,
+  ).bind(body.source, since).first();
+  if (!latest) return text('No purchase from the last 10 minutes to add this to.', 404);
+  await env.DB.prepare('UPDATE transactions SET item = ? WHERE id = ?').bind(item, latest.id).run();
+  return text(`Saved ${item} for ${formatRM(latest.amount_sen)} at ${latest.merchant}`);
+}
 
 async function saveLatestReceipt(request, env) {
   const body = await request.json().catch(() => ({}));
@@ -276,11 +374,17 @@ async function receiptRoute(request, env, id) {
   return text('Not found.', 404);
 }
 
-async function rememberCategory(env, merchant, category) {
-  await env.DB.prepare(
-    `INSERT INTO merchant_categories (merchant_key, category) VALUES (?, ?)
-     ON CONFLICT (merchant_key) DO UPDATE SET category = excluded.category`,
-  ).bind(merchantKey(merchant), category).run();
+const rememberCategory = saveCategory;
+
+async function draft(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const note = String(body.text ?? '').trim();
+  if (!note) return json({ error: 'Type what you bought and how much it was.' }, 422);
+  if (!aiEnabled(env)) return json({ error: "Quick add isn't switched on yet. Fill in the details below instead." }, 503);
+  const result = await draftPurchases(env, note);
+  if (!result) return json({ error: "Quick add isn't available right now. Fill in the details below instead." }, 503);
+  if (!result.items.length) return json({ error: "Couldn't find a purchase with a price. Try something like: nasi lemak 8.50." }, 422);
+  return json(result);
 }
 
 function cleanEdits(body) {
@@ -293,6 +397,7 @@ function cleanEdits(body) {
     out.merchant = String(body.merchant).trim().slice(0, 120);
     if (!out.merchant) return { error: 'Enter where you paid.' };
   }
+  if (body.item !== undefined) out.item = String(body.item ?? '').trim().slice(0, 120) || null;
   if (body.date !== undefined || body.time !== undefined) {
     const { date, time } = body;
     const valid = isDate(date) && /^([01]\d|2[0-3]):[0-5]\d$/.test(time || '')
@@ -324,6 +429,7 @@ async function api(request, env, url) {
     if (auth.retryAfter) res.headers.set('retry-after', String(auth.retryAfter));
     return res;
   }
+  await ensureSchema(env);
   const date = url.searchParams.get('date') || localDate();
   if (!isDate(date)) return text('Use a date like 2026-11-09.', 400);
 
@@ -345,10 +451,11 @@ async function api(request, env, url) {
   const commitment = path.match(/^\/api\/commitments\/([\w-]+)$/);
   if (commitment && method === 'DELETE') return removeCommitment(env, commitment[1]);
 
+  if (path === '/api/draft' && method === 'POST') return draft(request, env);
   if (path === '/api/transactions' && method === 'POST') {
     const body = await request.json().catch(() => ({}));
     const { out, error } = cleanEdits({
-      amount: body.amount ?? '', merchant: body.merchant ?? '',
+      amount: body.amount ?? '', merchant: body.merchant ?? '', item: body.item ?? '',
       ...(body.category ? { category: body.category } : {}),
       ...(body.date ? { date: body.date, time: body.time } : {}),
     });
@@ -358,16 +465,14 @@ async function api(request, env, url) {
     return json(row, 201);
   }
 
+  if (path === '/api/transactions/latest/item' && method === 'POST') return saveLatestItem(request, env);
   if (path === '/api/receipts/latest' && method === 'POST') return saveLatestReceipt(request, env);
   const receipt = path.match(/^\/api\/transactions\/([\w-]+)\/receipt$/);
   if (receipt) return receiptRoute(request, env, receipt[1]);
 
   const match = path.match(/^\/api\/transactions\/([\w-]+)$/);
   if (match && method === 'DELETE') {
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM receipts WHERE transaction_id = ?').bind(match[1]),
-      env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(match[1]),
-    ]);
+    await deleteTransaction(env, match[1]);
     return json({ ok: true });
   }
   if (match && method === 'PATCH') {

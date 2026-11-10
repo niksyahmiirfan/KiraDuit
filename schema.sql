@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   id TEXT PRIMARY KEY,
   amount_sen INTEGER NOT NULL CHECK (amount_sen > 0),
   merchant TEXT NOT NULL,
+  item TEXT,
   category TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('shopeepay_qr', 'apple_pay', 'manual')),
   card TEXT,
