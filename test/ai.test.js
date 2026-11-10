@@ -355,3 +355,21 @@ test('a refund still matches a split Apple Pay purchase by its full bill', async
   await post('/api/ingest', { source: 'apple_pay', amount: '-MYR 200.00', merchant: 'Restoran Sri Melayu' });
   assert.equal(rows().length, 0);
 });
+
+test('AEON Bank and TNG scans log the receiver, the note as What, and the app as payment method', async () => {
+  const { post, rows } = setup();
+  const aeon = '23:18\nSuccessful\nRM5.00\nNew transfer\nShare receipt\nTransfer to\nWAN IZAHAN ZAMEREE BIN IS\nDuitNow QR\nRecipient reference\nReclub Session\nRef ID: 20261110RPPEMYKL040HQR81470949';
+  assert.equal(await (await post('/api/ingest', scan(aeon))).text(), 'Logged RM5.00 at WAN IZAHAN ZAMEREE BIN IS');
+  assert.equal(await (await post('/api/ingest', scan(aeon))).text(), 'Already logged RM5.00');
+  await post('/api/ingest', scan("Touch 'n Go eWallet\nRM 24.60\nTransferred\nReceiver\nAHMAD RUSYAIDI BIN\nDARAZAKI\nRemark\nMurni"));
+  assert.deepEqual(rows().map((r) => [r.merchant, r.item, r.card, r.needs_review]), [
+    ['WAN IZAHAN ZAMEREE BIN IS', 'Reclub Session', 'AEON Bank', 0],
+    ['AHMAD RUSYAIDI BIN DARAZAKI', 'Murni', 'TNG eWallet', 0],
+  ]);
+});
+
+test('an unreadable TNG scan is logged under the TNG placeholder for checking', async () => {
+  const { post, rows } = setup();
+  await post('/api/ingest', scan("Touch 'n Go eWallet\nRM 24.60\nTransferred\nReceiver\nRemark\nAHMAD RUSYAIDI BIN"));
+  assert.deepEqual([rows()[0].merchant, rows()[0].needs_review], ['TNG eWallet QR', 1]);
+});

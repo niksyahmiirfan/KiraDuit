@@ -1,5 +1,5 @@
 import { cleanShares, equalShares, groupOwed, splitHint, usualFood } from './split.js';
-import { CATEGORIES, SOURCE_LABELS, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
+import { CATEGORIES, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
 
 const DEMO = Boolean(window.KIRADUIT_DEMO);
 const app = document.getElementById('app');
@@ -259,7 +259,7 @@ const breakdown = (s) => {
     ${s.byCategory.map((c) => `<div class="bar-row"><div><b>${esc(c.name)}</b><span>${formatRM(c.total)}</span></div><span class="bar" style="width:${Math.max(2, (c.total / top) * 100)}%"></span></div>`).join('')}
   </section>
   <section><h2>How you paid</h2><div class="paid">
-    ${s.bySource.map((p) => `<div><span>${SOURCE_LABELS[p.name]}</span><b>${formatRM(p.total)}</b></div>`).join('')}
+    ${s.bySource.map((p) => `<div><span>${esc(p.name)}</span><b>${formatRM(p.total)}</b></div>`).join('')}
   </div></section>`;
 };
 
@@ -352,7 +352,7 @@ function topSpending(h) {
   return `<section><h2>Top spending</h2>
     ${h.byCategory.slice(0, 5).map((c) => `<div class="rank"><span>${esc(c.name)}<em>${Math.round((c.total / h.total) * 100)}%</em></span><span>${formatRM(c.total)}</span></div>`).join('')}
     <div class="sub-head">Paid with</div>
-    ${h.bySource.map((p) => `<div class="rank"><span>${SOURCE_LABELS[p.name]}</span><span>${formatRM(p.total)}</span></div>`).join('')}
+    ${h.bySource.map((p) => `<div class="rank"><span>${esc(p.name)}</span><span>${formatRM(p.total)}</span></div>`).join('')}
   </section>`;
 }
 

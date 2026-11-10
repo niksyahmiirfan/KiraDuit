@@ -14,7 +14,7 @@ test('parseMoney handles Wallet and receipt formats', () => {
 });
 test('reads a receipt with labels on separate lines', () => {
   const r = parseReceipt('4:32\nPayment Successful\n-RM12.90\nMerchant\nNasi Kandar Pelita\nTransaction ID\nSPAY20261109ABC\nShopeePay Balance RM88.10');
-  assert.deepEqual(r, { amount_sen: 1290, merchant: 'Nasi Kandar Pelita', reference: 'SPAY20261109ABC', confirmed: true });
+  assert.deepEqual(r, { amount_sen: 1290, merchant: 'Nasi Kandar Pelita', reference: 'SPAY20261109ABC', confirmed: true, wallet: 'ShopeePay', note: null });
 });
 test('prefers total over subtotal and ignores balance and discounts', () => {
   const r = parseReceipt('Successful\nBalance: RM500.00\nVoucher\nRM2.00\nTotal Payment RM8.00\nPaid to: ZUS Coffee');
@@ -74,7 +74,7 @@ test('previous range compares the same stretch of time', () => {
 });
 test('reads a real ShopeePay QR receipt', () => {
   const text = 'RM 5.50\nTotal\nRewards\nRMO.02\nPayment Details\nTo\n• QL MAXINCOME SDN BHD\nPayment Time\nYou Paid\n09 Nov 2026, 08:09PM\nRM5.50\nView More v\nRewards\n2 Coins (RMO.02)\nFrom Coins Bonanza\nShare\nA OK';
-  assert.deepEqual(parseReceipt(text), { amount_sen: 550, merchant: 'QL MAXINCOME SDN BHD', reference: null, confirmed: true });
+  assert.deepEqual(parseReceipt(text), { amount_sen: 550, merchant: 'QL MAXINCOME SDN BHD', reference: null, confirmed: true, wallet: null, note: null });
 });
 test('rewards value is never taken as the payment, even when read correctly', () => {
   assert.equal(parseReceipt('RM 5.50\nTotal Rewards\nRM0.02\nTo\nKedai Ali\nYou Paid').amount_sen, 550);
@@ -91,4 +91,37 @@ test('Wallet amounts accept currency formats and reject stray text', () => {
   assert.equal(parseWalletAmount('1.10 MYR'), 110);
   assert.equal(parseWalletAmount('99 Speedmart> Amount'), null);
   assert.equal(parseWalletAmount(''), null);
+});
+
+const AEON = '23:18\nSuccessful\nRM5.00\nNew transfer\nShare receipt\nTransfer to\nWAN IZAHAN ZAMEREE BIN IS\nDuitNow QR\nTransaction date\n10 Nov 2026, 11:17PM\nRecipient reference\nReclub Session\nRef ID: 20261110RPPEMYKL040HQR81470949\nDone';
+const TNG = "Touch 'n Go eWallet\nRM 24.60\nTransferred\nReceiver\nAHMAD RUSYAIDI BIN\nDARAZAKI\nRemark\nMurni\nDate & Time\n10/11/2026 23:34:02";
+
+test('reads an AEON Bank DuitNow QR receipt', () => {
+  assert.deepEqual(parseReceipt(AEON), {
+    amount_sen: 500, merchant: 'WAN IZAHAN ZAMEREE BIN IS', reference: '20261110RPPEMYKL040HQR81470949',
+    confirmed: true, wallet: 'AEON Bank', note: 'Reclub Session',
+  });
+});
+
+test('reads a TNG eWallet receipt, joining a wrapped name', () => {
+  const expected = { amount_sen: 2460, merchant: 'AHMAD RUSYAIDI BIN DARAZAKI', reference: null, confirmed: true, wallet: 'TNG eWallet', note: 'Murni' };
+  assert.deepEqual(parseReceipt(TNG), expected);
+  assert.deepEqual(parseReceipt(TNG.replace('Receiver\n', 'Receiver ').replace('Remark\n', 'Remark ')), expected);
+});
+
+test('labels listed before their values are not read as values', () => {
+  const r = parseReceipt("Touch 'n Go eWallet\nRM 24.60\nTransferred\nReceiver\nRemark\nDate & Time\nAHMAD RUSYAIDI BIN\nDARAZAKI\nMurni");
+  assert.equal(r.amount_sen, 2460);
+  assert.equal(r.merchant, null);
+  assert.equal(r.note, null);
+});
+
+test('a recipient reference is never taken as the payee', () => {
+  assert.equal(parseReceipt('Successful\nRM5.00\nRecipient reference\nLunch').merchant, null);
+});
+
+test('payment method names QR scans by their app', () => {
+  const t = (source, card, amount_sen) => ({ local_date: '2026-11-10', occurred_at: '2026-11-10T04:00:00Z', amount_sen, category: 'Food', source, card, merchant: 'X', needs_review: 0 });
+  const s = summarize([t('shopeepay_qr', null, 100), t('shopeepay_qr', 'AEON Bank', 500), t('shopeepay_qr', 'TNG eWallet', 300), t('apple_pay', 'RHB Visa', 200)], '2026-11-10');
+  assert.deepEqual(s.bySource, [{ name: 'AEON Bank', total: 500 }, { name: 'TNG eWallet', total: 300 }, { name: 'Apple Pay', total: 200 }, { name: 'ShopeePay', total: 100 }]);
 });
