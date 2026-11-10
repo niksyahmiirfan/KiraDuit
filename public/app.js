@@ -269,6 +269,7 @@ const ICONS = {
   links: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><path d="M16.75 13.5v6.5M13.5 16.75H20"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
   signout: '<path d="M14 4H6v16h8"/><path d="M10 12h10M16 8l4 4-4 4"/>',
   split: '<circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5M14.5 14.6c2.6-.6 5 .8 5.8 4.4"/>',
@@ -720,13 +721,13 @@ async function openFriendSheet(name) {
   let friend;
   const draw = (message = '') => {
     if (!friend?.shares.length) { sheet.close(); return; }
-    sheet.innerHTML = `<form method="dialog"><h2>${esc(friend.name)} owes ${formatRM(friend.owed_sen)}</h2>
+    sheet.innerHTML = `<form method="dialog"><div class="sheet-head"><h2>${esc(friend.name)} owes ${formatRM(friend.owed_sen)}</h2>
+      <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
       <div class="owed-list">${friend.shares.map((s) => `<div class="owed-row"><span><b>${formatRM(s.amount_sen)}</b>
         <small>${s.item ? `${esc(s.item)} at ` : ''}${esc(s.merchant)}, ${shortDate(s.local_date)}</small></span>
         <button type="button" data-paid="${esc(s.id)}">Paid</button></div>`).join('')}</div>
       <p class="error" ${message ? '' : 'hidden'}>${esc(message)}</p>
-      <div class="actions"><button type="button" class="quiet" data-close>Close</button>
-        ${friend.shares.length > 1 ? '<button class="primary">Mark all paid</button>' : ''}</div></form>`;
+      ${friend.shares.length > 1 ? '<div class="actions end"><button class="primary">Mark all paid</button></div>' : ''}</form>`;
     const form = sheet.querySelector('form');
     const settle = async (ids) => {
       try {
