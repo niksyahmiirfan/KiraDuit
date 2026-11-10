@@ -99,11 +99,11 @@ const api = DEMO ? {
   removeCommitment: async (id) => { demoCommitments = demoCommitments.filter((c) => c.id !== id); },
   update: async (id, f) => {
     const t = demoTxs.find((x) => x.id === id);
-    Object.assign(t, { merchant: f.merchant, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), needs_review: 0, local_date: f.date, occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString() });
+    Object.assign(t, { merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), needs_review: 0, local_date: f.date, occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString() });
   },
   remove: async (id) => demoTxs.splice(demoTxs.findIndex((x) => x.id === id), 1),
-  draft: async (text) => ({ skipped: 0, items: [...text.matchAll(/([^,\d]+?)\s*(\d+(?:\.\d{1,2})?)/g)].map((m) => ({ merchant: m[1].trim(), amount_sen: toSen(m[2]), category: 'Food' })) }),
-  add: async (f) => demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }),
+  draft: async (text) => ({ skipped: 0, items: [...text.matchAll(/([^,\d]+?)\s*(\d+(?:\.\d{1,2})?)/g)].map((m) => ({ item: m[1].replace(/^\s*,?\s*/, '').trim(), merchant: (text.match(/\bat\s+(.+)$/i) || [])[1]?.trim() || '', amount_sen: toSen(m[2]), category: 'Food' })) }),
+  add: async (f) => demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }),
 } : {
   load: (d) => request(`/api/summary?date=${d}`),
   loadHome: (view, d) => request(`/api/home?view=${view}&date=${d}`),
@@ -149,17 +149,19 @@ function verdict(s) {
   return `<p class="verdict">${n}${compare}</p>`;
 }
 
+const spentAt = (t) => `${formatRM(t.amount_sen)}${t.item ? ` for ${t.item}` : ''} at ${t.merchant}`;
+
 const ribbon = (s) => {
   if (!s.count) return '';
   const max = s.largest.amount_sen;
   const ticks = s.transactions.map((t) => {
     const h = Math.max(10, Math.round((t.amount_sen / max) * 68));
     return `<button class="tick" data-tick="${esc(t.id)}" aria-pressed="${t.id === selected}" style="left:${(minutesInto(t.occurred_at) / 1440) * 100}%"
-      aria-label="${esc(`${formatRM(t.amount_sen)} at ${t.merchant}, ${time(t.occurred_at)}`)}"><i style="height:${h}px"></i></button>`;
+      aria-label="${esc(`${spentAt(t)}, ${time(t.occurred_at)}`)}"><i style="height:${h}px"></i></button>`;
   }).join('');
   const pick = s.transactions.find((t) => t.id === selected);
-  const line = pick ? `${formatRM(pick.amount_sen)} at ${pick.merchant}, ${time(pick.occurred_at)}`
-    : `Largest was ${formatRM(max)} at ${s.largest.merchant}, ${time(s.largest.occurred_at)}`;
+  const line = pick ? `${spentAt(pick)}, ${time(pick.occurred_at)}`
+    : `Largest was ${spentAt(s.largest)}, ${time(s.largest.occurred_at)}`;
   return `<div class="ribbon"><div class="ribbon-track">${ticks}</div>
     <div class="hours"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span></div>
     <p class="readout" aria-live="polite">${esc(line)}</p></div>`;
@@ -299,7 +301,7 @@ const RECEIPT_PROMPT_MS = 30 * 60 * 1000;
 
 function receiptPrompt(t) {
   if (!t || Date.now() - new Date(t.occurred_at).getTime() > RECEIPT_PROMPT_MS || store.get('kd-no-receipt') === t.id) return '';
-  return `<div class="receipt-card"><p>Add a receipt for ${formatRM(t.amount_sen)} at ${esc(t.merchant)}?</p>
+  return `<div class="receipt-card"><p>Add a receipt for ${esc(spentAt(t))}?</p>
     <div><button data-receipt-take="${esc(t.id)}">Take photo</button><button data-receipt-skip="${esc(t.id)}">Skip</button></div></div>`;
 }
 
@@ -390,7 +392,7 @@ function render() {
     <section><h2>Purchases</h2>
       ${s.count ? [...s.transactions].reverse().map((t) => `<button class="buy ${t.id === selected ? 'lit' : ''}" data-edit="${esc(t.id)}">
         <strong>${esc(t.merchant)}</strong><span>${formatRM(t.amount_sen)}</span>
-        <small>${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? ', receipt' : ''}</small></button>`).join('')
+        <small>${t.item ? `${esc(t.item)}, ` : ''}${time(t.occurred_at)}, ${esc(t.needs_review ? '' : t.category)}${t.needs_review ? '<em>Tap to check</em>' : ''}${t.has_receipt ? ', receipt' : ''}</small></button>`).join('')
     : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
     </section>
     ${dock()}`;
@@ -465,12 +467,13 @@ function openSheet(t) {
   const when = t ? localParts(t.occurred_at) : { date: defaultDate, time: defaultDate === today ? localParts(new Date().toISOString()).time : '12:00' };
   sheet.innerHTML = `<form method="dialog">
     <h2>${t ? 'Edit purchase' : 'Add purchase'}</h2>
-    ${t ? '' : `<div class="quick"><label>Quick add<textarea id="quick-note" rows="2" maxlength="500" placeholder="Nasi lemak 8.50, teh tarik 2.50"></textarea></label>
+    ${t ? '' : `<div class="quick"><label>Quick add<textarea id="quick-note" rows="2" maxlength="500" placeholder="Teh ais 1.50, roti canai 2 at Mamak XYZ"></textarea></label>
     <p class="error" id="quick-error" hidden></p>
     <button type="button" class="text-action" data-draft>Read this</button></div>`}
     ${fromReceipt ? '<p class="error">Check these details against your receipt.</p>' : ''}
     <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${t ? (t.amount_sen / 100).toFixed(2) : ''}"></label>
-    <label>Where<input name="merchant" required value="${t ? esc(t.merchant) : ''}"></label>
+    <label>Where<input name="merchant" required maxlength="120" placeholder="Mamak XYZ" value="${t ? esc(t.merchant) : ''}"></label>
+    <label>What <span class="optional">(optional)</span><input name="item" maxlength="120" placeholder="Teh Ais" value="${t?.item ? esc(t.item) : ''}"></label>
     <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${(t?.category || 'Food') === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
     <div class="two"><label>Date<input name="date" type="date" required max="${today}" value="${when.date}"></label>
     <label>Time<input name="time" type="time" required value="${when.time}"></label></div>
@@ -520,8 +523,9 @@ function openDraftSheet({ items, skipped }, draftDate) {
   sheet.innerHTML = `<form method="dialog"><h2>Check these</h2>
     ${skipped ? `<p class="hint">${skipped} item${skipped === 1 ? '' : 's'} had no clear price and ${skipped === 1 ? 'was' : 'were'} left out.</p>` : ''}
     <div class="drafts">${items.map((d) => `<fieldset class="draft">
-      <div class="two"><label>Where<input name="merchant" required maxlength="120" value="${esc(d.merchant)}"></label>
+      <div class="two"><label>What<input name="item" maxlength="120" value="${esc(d.item || '')}"></label>
       <label>Amount (RM)<input name="amount" inputmode="decimal" required value="${(d.amount_sen / 100).toFixed(2)}"></label></div>
+      <label>Where<input name="merchant" required maxlength="120" placeholder="Where you bought it" value="${esc(d.merchant || '')}"></label>
       <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${d.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
       <button type="button" class="text-action" data-draft-remove>Remove</button></fieldset>`).join('')}</div>
     <label>Date<input name="date" type="date" required max="${today}" value="${draftDate}"></label>
@@ -531,6 +535,11 @@ function openDraftSheet({ items, skipped }, draftDate) {
   const rows = () => [...form.querySelectorAll('.draft')];
   const primary = form.querySelector('.primary');
   form.querySelector('[data-close]').onclick = () => sheet.close();
+  // Typing a place fills the other empty Where fields, since a note is usually from one shop.
+  form.querySelector('.drafts').addEventListener('change', (e) => {
+    if (e.target.name !== 'merchant' || !e.target.value.trim()) return;
+    form.querySelectorAll('.draft [name="merchant"]').forEach((input) => { if (!input.value.trim()) input.value = e.target.value; });
+  });
   form.querySelector('.drafts').addEventListener('click', (e) => {
     if (!e.target.matches('[data-draft-remove]')) return;
     e.target.closest('.draft').remove();
@@ -546,7 +555,7 @@ function openDraftSheet({ items, skipped }, draftDate) {
       // Saved rows leave the list, so retrying after an error can't add them twice.
       for (const row of rows()) {
         const value = (name) => row.querySelector(`[name="${name}"]`).value;
-        await api.add({ amount: value('amount'), merchant: value('merchant'), category: value('category'), date: when, time });
+        await api.add({ amount: value('amount'), merchant: value('merchant'), item: value('item'), category: value('category'), date: when, time });
         row.remove();
       }
       sheet.close();
