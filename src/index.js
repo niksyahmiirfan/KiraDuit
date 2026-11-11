@@ -1,6 +1,7 @@
 import { detectWallet, parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
 import { authenticate, login, logout } from './auth.js';
 import { cleanReceipt } from '../public/receipt.js';
+import { DEFAULT_SHORTCUTS, cleanShortcuts } from '../public/shortcuts.js';
 import { cleanShares, groupOwed, splitHint, usualFood } from '../public/split.js';
 import { aiEnabled, draftPurchases, readReceiptItems, readReceipt, suggestCategory } from './ai.js';
 import { CATEGORIES, addDays, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
@@ -574,6 +575,21 @@ async function api(request, env, url) {
 
   if (path === '/api/owed' && method === 'GET') return loadOwed(env);
   if (path === '/api/receipt-items' && method === 'POST') return receiptItems(request, env);
+  if (path === '/api/shortcuts' && method === 'GET') {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'shortcuts'").first();
+    let saved = null;
+    try { saved = row ? JSON.parse(row.value) : null; } catch { saved = null; }
+    return json({ shortcuts: Array.isArray(saved) ? saved : DEFAULT_SHORTCUTS });
+  }
+  if (path === '/api/shortcuts' && method === 'PUT') {
+    const body = await request.json().catch(() => ({}));
+    const { shortcuts, error } = cleanShortcuts(body.shortcuts);
+    if (error) return json({ error }, 422);
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('shortcuts', ?1) ON CONFLICT (key) DO UPDATE SET value = ?1",
+    ).bind(JSON.stringify(shortcuts)).run();
+    return json({ shortcuts });
+  }
   const share = path.match(/^\/api\/shares\/([\w-]+)$/);
   if (share && method === 'POST') {
     const body = await request.json().catch(() => ({}));

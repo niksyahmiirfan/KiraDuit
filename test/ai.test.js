@@ -399,3 +399,15 @@ test('receipt scanning explains when it cannot help', async () => {
   const failing = setup([new Error('down')]).env;
   assert.equal((await call(failing, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).status, 503);
 });
+
+test('shortcuts default to the original three and save in order', async () => {
+  const { env } = setup();
+  assert.equal((await (await call(env, 'GET', '/api/shortcuts')).json()).shortcuts.length, 3);
+  const list = [{ name: 'Boost', kind: 'shortcut', target: 'Open Boost' }, { id: 'spay', name: 'ShopeePay', kind: 'link', target: 'shopeepaymy://', logo: 'spay' }];
+  assert.equal((await call(env, 'PUT', '/api/shortcuts', { shortcuts: list })).status, 200);
+  const saved = (await (await call(env, 'GET', '/api/shortcuts')).json()).shortcuts;
+  assert.deepEqual(saved.map((s) => s.name), ['Boost', 'ShopeePay']);
+  assert.equal((await call(env, 'PUT', '/api/shortcuts', { shortcuts: [{ name: 'X', kind: 'link', target: 'javascript:1' }] })).status, 422);
+  assert.equal((await call(env, 'PUT', '/api/shortcuts', { shortcuts: [] })).status, 200);
+  assert.deepEqual((await (await call(env, 'GET', '/api/shortcuts')).json()).shortcuts, []);
+});

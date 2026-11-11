@@ -1,5 +1,5 @@
-const CACHE = 'kiraduit-v9';
-const SHELL = ['/', '/styles.css', '/app.js', '/summary.js', '/split.js', '/receipt.js', '/manifest.webmanifest', '/fonts/familjen.woff2', '/icons/icon-192.png'];
+const CACHE = 'kiraduit-v10';
+const SHELL = ['/', '/styles.css', '/app.js', '/summary.js', '/split.js', '/receipt.js', '/shortcuts.js', '/manifest.webmanifest', '/fonts/familjen.woff2', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((path) => new Request(path, { cache: 'reload' })))).then(() => self.skipWaiting()));

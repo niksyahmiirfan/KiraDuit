@@ -99,7 +99,7 @@ KiraDuit offers a photo prompt for 30 minutes after a QR purchase, and you can a
 - **Categories:** when you change a merchant's category, future purchases there use it.
 - **Scanning a receipt:** tap **+**, then **Scan a receipt**, or open a logged purchase and tap **Pick my items from the receipt**. Tick your items, and use + and − for items ordered more than once. Your share includes your part of service charge, SST, discounts and rounding, in proportion to what you ordered. From **+** it logs your share. From a logged purchase you can split the rest with friends or set the purchase to your share. This needs AI help to be switched on.
 - **Splitting a bill:** open a purchase and tap **Split this bill**, then add the friends who owe you. Only your share counts as spending, and what friends owe appears under **Owed to you** on Home until you mark it paid. KiraDuit also asks about Food purchases of RM60 or more that are over three times your usual Food purchase.
-- **Shortcuts page:** ShopeePay opens directly. For Touch 'n Go eWallet and MAE, create a shortcut with the **Open App** action for each and name them exactly **Open TNG** and **Open MAE**.
+- **Shortcuts page:** tap **Edit** to add, change, reorder or remove shortcuts, up to 12. A shortcut opens an app link such as `shopeepaymy://`, a website, or an iPhone Shortcut by name. For apps without a link, such as Touch 'n Go eWallet and MAE, make a Shortcut with the **Open App** action named exactly **Open TNG** or **Open MAE**, or whatever name you give it in KiraDuit. Icons are optional, and a letter is shown without one.
 
 ## Tips
 
