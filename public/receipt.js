@@ -29,13 +29,23 @@ export function cleanReceipt(raw) {
   const charges_sen = charges.reduce((a, c) => a + c.amount_sen, 0);
   const read_total = sen(raw?.total);
   const total_sen = read_total > 0 ? read_total : items_sen + charges_sen;
-  // A mismatch usually means a line was misread or missed, so it's shown as a warning.
-  const gap = total_sen - (items_sen + charges_sen);
-  return {
-    merchant: label(raw?.merchant, 120) || null,
-    items, charges, items_sen, charges_sen, total_sen,
-    mismatch_sen: Math.abs(gap) > Math.max(10, Math.round(total_sen * 0.01)) ? gap : 0,
-  };
+  const subtotal_sen = sen(raw?.subtotal) > 0 ? sen(raw.subtotal) : null;
+  return withCheck({ merchant: label(raw?.merchant, 120) || null, items, charges, items_sen, charges_sen, total_sen, subtotal_sen });
+}
+
+/**
+ * Recomputes the sums and the mismatch warning after items are read or edited.
+ * A mismatch usually means a line was misread or missed. The printed subtotal is the best check, when there is one.
+ */
+export function withCheck(r) {
+  const items_sen = r.items.reduce((a, it) => a + it.amount_sen, 0);
+  const target = r.subtotal_sen ?? r.total_sen - r.charges_sen;
+  const gap = target - items_sen;
+  return { ...r, items_sen, mismatch_sen: Math.abs(gap) > Math.max(10, Math.round(target * 0.01)) ? gap : 0 };
+}
+
+export function emptyReceipt(merchant = null) {
+  return { merchant, items: [], charges: [], items_sen: 0, charges_sen: 0, total_sen: 0, subtotal_sen: null, mismatch_sen: 0 };
 }
 
 /**
@@ -43,7 +53,7 @@ export function cleanReceipt(raw) {
  * Tax, service charge, discounts and rounding are shared in proportion to what each person ordered,
  * so your share is the bill total times your fraction of the item total.
  */
-export function shareOf(receipt, picks, bill_sen = receipt.total_sen) {
+export function shareOf(receipt, picks, bill_sen = receipt.total_sen || receipt.items_sen + receipt.charges_sen) {
   let mine = 0;
   for (const it of receipt.items) {
     const units = Math.min(Math.max(Number(picks[it.id]) || 0, 0), it.qty);
