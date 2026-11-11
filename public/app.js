@@ -1,4 +1,5 @@
 import { cleanReceipt, pickedNames, shareOf } from './receipt.js';
+import { DEFAULT_SHORTCUTS, MAX_SHORTCUTS, cleanShortcut, cleanShortcuts, shortcutCaption, shortcutHref } from './shortcuts.js';
 import { cleanShares, equalShares, groupOwed, splitHint, usualFood } from './split.js';
 import { CATEGORIES, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
 
@@ -60,6 +61,7 @@ let demoIncome = DEMO ? 450000 : null;
 let demoDefault = null;
 let demoCommitments = DEMO ? [{ id: 'c1', name: 'Rent', amount_sen: 90000 }, { id: 'c2', name: 'Car loan', amount_sen: 65000 }, { id: 'c3', name: 'Phone plan', amount_sen: 6800 }] : [];
 const demoReceipts = new Map();
+let demoShortcuts = DEFAULT_SHORTCUTS.map((s) => ({ ...s }));
 const demoSplits = new Map(); // purchase id -> { bill_sen, shares: [{ id, friend, amount_sen, paid }] }
 const demoOwedRows = () => [...demoSplits].flatMap(([id, s]) => {
   const t = demoTxs.find((x) => x.id === id);
@@ -147,6 +149,8 @@ const api = DEMO ? {
       total: 144.0,
     });
   },
+  shortcuts: async () => ({ shortcuts: demoShortcuts }),
+  saveShortcuts: async (list) => { const r = cleanShortcuts(list); if (r.error) throw new Error(r.error); demoShortcuts = r.shortcuts; return r; },
   setPaid: async (shareId, paid) => { for (const s of demoSplits.values()) for (const x of s.shares) if (x.id === shareId) x.paid = paid; },
   setBudget: async (d, amount) => { demoBudgets[d] = toSen(amount); },
   setIncome: async (amount) => { demoIncome = toSen(amount); },
@@ -193,6 +197,8 @@ const api = DEMO ? {
   unsplit: (id) => request(`/api/transactions/${id}/split`, { method: 'DELETE' }),
   owed: () => request('/api/owed'),
   receiptItems: (body) => request('/api/receipt-items', { method: 'POST', body: JSON.stringify(body) }),
+  shortcuts: () => request('/api/shortcuts'),
+  saveShortcuts: (shortcuts) => request('/api/shortcuts', { method: 'PUT', body: JSON.stringify({ shortcuts }) }),
   setPaid: (shareId, paid) => request(`/api/shares/${shareId}`, { method: 'POST', body: JSON.stringify({ paid }) }),
 };
 
@@ -469,20 +475,108 @@ function renderHome() {
     ${dock()}`;
 }
 
-const APPS = [
-  { logo: 'tng', name: "Touch 'n Go eWallet", href: 'shortcuts://run-shortcut?name=Open%20TNG' },
-  { logo: 'spay', name: 'ShopeePay', href: 'shopeepaymy://' },
-  { logo: 'mae', name: 'MAE by Maybank2u', href: 'shortcuts://run-shortcut?name=Open%20MAE' },
-];
+// The saved list loads in the background, so the page opens instantly with the last list seen.
+let shortcutList = (() => { try { return JSON.parse(store.get('kd-shortcuts') || 'null') || DEFAULT_SHORTCUTS; } catch { return DEFAULT_SHORTCUTS; } })();
+let editingShortcuts = false;
+
+const shortcutIcon = (s) => (s.icon ? `<img class="app-mark" src="${esc(s.icon)}" alt="" width="52" height="52">`
+  : s.logo ? `<img class="app-mark" src="/icons/app-${s.logo}.png" alt="" width="52" height="52">`
+  : `<span class="app-mark letter" aria-hidden="true">${esc([...s.name][0]?.toUpperCase() || '?')}</span>`);
 
 function renderLinks() {
+  const list = shortcutList;
   app.innerHTML = `
-    <h1 class="links-title">Shortcuts</h1>
-    <p class="links-intro">Open an app to pay.</p>
+    <div class="links-head"><h1 class="links-title">Shortcuts</h1>
+      <button class="text-action" data-shortcuts-edit>${editingShortcuts ? 'Done' : 'Edit'}</button></div>
+    <p class="links-intro">${editingShortcuts ? 'Tap a shortcut to change it, or use the arrows to reorder.' : 'Open an app to pay.'}</p>
     <div class="link-list">
-      ${APPS.map((a) => `<a class="app-link" href="${a.href}"><img class="app-mark" src="/icons/app-${a.logo}.png" alt="" width="52" height="52"><span><b>${esc(a.name)}</b><span>Open app</span></span></a>`).join('')}
+      ${list.map((s, i) => (editingShortcuts
+        ? `<div class="app-link editing">${shortcutIcon(s)}<button class="shortcut-name" data-shortcut-edit="${i}"><b>${esc(s.name)}</b><span>Edit</span></button>
+            <span class="order"><button data-shortcut-move="${i}:-1" aria-label="Move ${esc(s.name)} up" ${i === 0 ? 'disabled' : ''}>↑</button>
+            <button data-shortcut-move="${i}:1" aria-label="Move ${esc(s.name)} down" ${i === list.length - 1 ? 'disabled' : ''}>↓</button></span></div>`
+        : `<a class="app-link" href="${esc(shortcutHref(s))}">${shortcutIcon(s)}<span><b>${esc(s.name)}</b><span>${shortcutCaption(s)}</span></span></a>`)).join('')}
+      ${!list.length ? '<p class="empty">No shortcuts yet.</p>' : ''}
     </div>
+    ${editingShortcuts && list.length < MAX_SHORTCUTS ? '<button class="add-shortcut" data-shortcut-add>+ Add shortcut</button>' : ''}
+    ${editingShortcuts ? '<button class="text-action restore" data-shortcuts-reset>Restore the original three</button>' : ''}
+    <p class="error" id="links-error" hidden></p>
     ${dock()}`;
+}
+
+async function loadShortcuts() {
+  try {
+    shortcutList = (await api.shortcuts()).shortcuts;
+    store.set('kd-shortcuts', JSON.stringify(shortcutList));
+    if (page === 'links') renderLinks();
+  } catch { /* keeps the last list seen */ }
+}
+
+async function saveShortcutList(list) {
+  const saved = (await api.saveShortcuts(list)).shortcuts;
+  shortcutList = saved;
+  store.set('kd-shortcuts', JSON.stringify(saved));
+  if (page === 'links') renderLinks();
+}
+
+/** Turns a chosen picture into a small square icon. */
+async function makeIcon(file) {
+  const bitmap = await createImageBitmap(file);
+  const side = Math.min(bitmap.width, bitmap.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 120;
+  canvas.getContext('2d').drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 120, 120);
+  bitmap.close?.();
+  return canvas.toDataURL('image/png').length <= 80000 ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.8);
+}
+
+function openShortcutSheet(index) {
+  const existing = index === null ? null : shortcutList[index];
+  const draft = existing ? { ...existing } : { name: '', kind: 'link', target: '', icon: null, logo: null };
+  const draw = (message = '') => {
+    sheet.innerHTML = `<form method="dialog"><div class="sheet-head"><h2>${existing ? 'Edit shortcut' : 'Add shortcut'}</h2>
+      <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
+      <div class="icon-pick">${shortcutIcon({ ...draft, name: draft.name || '?' })}
+        <div><button type="button" class="text-action" data-icon-pick>${draft.icon || draft.logo ? 'Change icon' : 'Add icon'}</button>
+        ${draft.icon || draft.logo ? '<button type="button" class="text-action quiet-link" data-icon-clear>Use a letter</button>' : ''}</div></div>
+      <label>Name<input name="name" maxlength="40" required value="${esc(draft.name)}" placeholder="Boost"></label>
+      <fieldset class="kind"><legend>Opens</legend>
+        <label><input type="radio" name="kind" value="link" ${draft.kind === 'link' ? 'checked' : ''}> An app or website link</label>
+        <label><input type="radio" name="kind" value="shortcut" ${draft.kind === 'shortcut' ? 'checked' : ''}> An iPhone Shortcut</label></fieldset>
+      <label>${draft.kind === 'shortcut' ? 'Shortcut name' : 'Link'}<input name="target" required autocapitalize="off" autocorrect="off" spellcheck="false"
+        value="${esc(draft.target)}" placeholder="${draft.kind === 'shortcut' ? 'Open Boost' : 'https://… or appname://'}"></label>
+      <p class="hint">${draft.kind === 'shortcut'
+        ? 'For apps without a link, make a Shortcut with the Open App action, then enter its exact name here.'
+        : 'App links open the app directly, such as shopeepaymy:// for ShopeePay. Website links open in Safari.'}</p>
+      <p class="error" ${message ? '' : 'hidden'}>${esc(message)}</p>
+      <div class="actions">${existing ? '<button type="button" class="quiet" data-shortcut-delete>Remove</button>' : '<span></span>'}
+        <button class="primary">${existing ? 'Save' : 'Add shortcut'}</button></div></form>`;
+    const form = sheet.querySelector('form');
+    const keep = () => { draft.name = form.elements.name.value; draft.target = form.elements.target.value; };
+    form.querySelectorAll('[name="kind"]').forEach((r) => r.addEventListener('change', () => { keep(); draft.kind = r.value; draft.target = ''; draw(); }));
+    form.querySelector('[data-close]').onclick = () => sheet.close();
+    form.querySelector('[data-icon-pick]').onclick = () => { keep(); iconInput.onchange = async () => {
+      const file = iconInput.files[0]; iconInput.value = '';
+      if (!file) return;
+      try { draft.icon = await makeIcon(file); draft.logo = null; draw(); } catch { draw("That picture couldn't be used."); }
+    }; iconInput.click(); };
+    form.querySelector('[data-icon-clear]')?.addEventListener('click', () => { keep(); draft.icon = null; draft.logo = null; draw(); });
+    form.querySelector('[data-shortcut-delete]')?.addEventListener('click', async (e) => {
+      const el = e.currentTarget;
+      if (!el.classList.contains('confirm')) { el.classList.add('confirm'); el.textContent = 'Tap again to remove'; return; }
+      try { await saveShortcutList(shortcutList.filter((_, i) => i !== index)); sheet.close(); } catch (err) { draw(err.message); }
+    });
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      keep();
+      const { shortcut, error } = cleanShortcut(draft);
+      if (error) return draw(error);
+      const list = [...shortcutList];
+      if (existing) list[index] = shortcut; else list.push(shortcut);
+      try { await saveShortcutList(list); sheet.close(); } catch (err) { draw(err.message); }
+    };
+  };
+  draw();
+  sheet.showModal();
 }
 
 function render() {
@@ -541,6 +635,7 @@ let sheetPurchase = null;
 let receiptTarget = null;
 const receiptInput = document.getElementById('receipt-input');
 const receiptLibrary = document.getElementById('receipt-library');
+const iconInput = document.getElementById('icon-input');
 const photoButtons = (id, cameraLabel) => `<button type="button" data-receipt-take="${esc(id)}">${icon('camera')}<span>${cameraLabel}</span></button>
   <button type="button" data-receipt-pick="${esc(id)}">${icon('photo')}<span>Upload</span></button>`;
 
@@ -1053,7 +1148,7 @@ async function downloadCsv() {
 
 async function refresh() {
   try {
-    if (page === 'links') renderLinks();
+    if (page === 'links') { renderLinks(); loadShortcuts(); }
     else if (page === 'home') { home = await api.loadHome(range, homeDate); signedIn = true; renderHome(); } else { summary = await api.load(date); signedIn = true; render(); }
   } catch (e) {
     if (e.message !== 'unauthorized') app.innerHTML = `<div class="gate"><h1>KiraDuit</h1><p>Your spending could not be loaded. Check your connection, then try again.</p><button class="primary" data-retry>Try again</button></div>`;
@@ -1088,6 +1183,16 @@ app.addEventListener('click', (e) => {
   else if (d.split) openSplitSheet(summary.transactions.find((t) => t.id === d.split));
   else if (d.splitSkip) { store.set('kd-no-split', JSON.stringify([d.splitSkip, ...dismissedSplits()].slice(0, 50))); render(); }
   else if (d.friend) openFriendSheet(d.friend);
+  else if (d.shortcutsEdit !== undefined) { editingShortcuts = !editingShortcuts; renderLinks(); }
+  else if (d.shortcutAdd !== undefined) openShortcutSheet(null);
+  else if (d.shortcutEdit) openShortcutSheet(Number(d.shortcutEdit));
+  else if (d.shortcutMove) {
+    const [i, step] = d.shortcutMove.split(':').map(Number);
+    const list = [...shortcutList];
+    [list[i], list[i + step]] = [list[i + step], list[i]];
+    saveShortcutList(list).catch((err) => { const p = document.getElementById('links-error'); p.hidden = false; p.textContent = err.message; });
+  }
+  else if (d.shortcutsReset !== undefined) saveShortcutList(DEFAULT_SHORTCUTS).catch(() => {});
   else if (d.edit) openSheet(summary.transactions.find((t) => t.id === d.edit));
   else if (d.add !== undefined) openSheet(null);
   else if (d.receiptTake) { receiptTarget = d.receiptTake; receiptInput.click(); }
