@@ -1,3 +1,4 @@
+import { cleanReceipt, pickedNames, shareOf } from './receipt.js';
 import { cleanShares, equalShares, groupOwed, splitHint, usualFood } from './split.js';
 import { CATEGORIES, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
 
@@ -135,6 +136,17 @@ const api = DEMO ? {
   },
   unsplit: async (id) => { const s = demoSplits.get(id); if (s) { demoTxs.find((x) => x.id === id).amount_sen = s.bill_sen; demoSplits.delete(id); } },
   owed: async () => ({ friends: groupOwed(demoOwedRows()) }),
+  receiptItems: async () => {
+    await new Promise((r) => setTimeout(r, 500));
+    return cleanReceipt({
+      merchant: 'Restoran Tomyam Seri Pagi',
+      items: [{ name: 'Nasi Goreng Kampung', qty: 1, amount: 12 }, { name: 'Tomyam Campur (Besar)', qty: 1, amount: 38 },
+        { name: 'Telur Dadar', qty: 1, amount: 8 }, { name: 'Teh Ais', qty: 3, amount: 10.5 }, { name: 'Sirap Limau', qty: 2, amount: 7 },
+        { name: 'Kailan Ikan Masin', qty: 1, amount: 14 }, { name: 'Ayam Goreng Berempah', qty: 2, amount: 24 }, { name: 'Nasi Putih', qty: 4, amount: 10 }],
+      charges: [{ name: 'Service charge 10%', amount: 12.35 }, { name: 'SST 6%', amount: 8.15 }],
+      total: 144.0,
+    });
+  },
   setPaid: async (shareId, paid) => { for (const s of demoSplits.values()) for (const x of s.shares) if (x.id === shareId) x.paid = paid; },
   setBudget: async (d, amount) => { demoBudgets[d] = toSen(amount); },
   setIncome: async (amount) => { demoIncome = toSen(amount); },
@@ -146,11 +158,17 @@ const api = DEMO ? {
   removeCommitment: async (id) => { demoCommitments = demoCommitments.filter((c) => c.id !== id); },
   update: async (id, f) => {
     const t = demoTxs.find((x) => x.id === id);
-    Object.assign(t, { merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), needs_review: 0, local_date: f.date, occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString() });
+    // Like the server, only the fields sent are changed.
+    if (f.merchant !== undefined) t.merchant = f.merchant;
+    if (f.item !== undefined) t.item = f.item || null;
+    if (f.category !== undefined) t.category = f.category;
+    if (f.amount !== undefined) t.amount_sen = Math.round(parseFloat(f.amount) * 100);
+    if (f.date !== undefined) { t.local_date = f.date; t.occurred_at = new Date(`${f.date}T${f.time}:00+08:00`).toISOString(); }
+    if (f.merchant !== undefined || f.category !== undefined) t.needs_review = 0;
   },
   remove: async (id) => demoTxs.splice(demoTxs.findIndex((x) => x.id === id), 1),
   draft: async (text) => ({ skipped: 0, items: [...text.matchAll(/([^,\d]+?)\s*(\d+(?:\.\d{1,2})?)/g)].map((m) => ({ item: m[1].replace(/^\s*,?\s*/, '').trim(), merchant: (text.match(/\bat\s+(.+)$/i) || [])[1]?.trim() || '', amount_sen: toSen(m[2]), category: 'Food' })) }),
-  add: async (f) => demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }),
+  add: async (f) => demoTxs[demoTxs.push({ id: `m${Date.now()}`, merchant: f.merchant, item: f.item || null, category: f.category, amount_sen: Math.round(parseFloat(f.amount) * 100), source: 'manual', occurred_at: new Date(`${f.date}T${f.time}:00+08:00`).toISOString(), local_date: f.date, needs_review: 0 }) - 1],
 } : {
   load: (d) => request(`/api/summary?date=${d}`),
   loadHome: (view, d) => request(`/api/home?view=${view}&date=${d}`),
@@ -174,6 +192,7 @@ const api = DEMO ? {
   saveSplit: (id, shares) => request(`/api/transactions/${id}/split`, { method: 'PUT', body: JSON.stringify({ shares }) }),
   unsplit: (id) => request(`/api/transactions/${id}/split`, { method: 'DELETE' }),
   owed: () => request('/api/owed'),
+  receiptItems: (body) => request('/api/receipt-items', { method: 'POST', body: JSON.stringify(body) }),
   setPaid: (shareId, paid) => request(`/api/shares/${shareId}`, { method: 'POST', body: JSON.stringify({ paid }) }),
 };
 
@@ -563,6 +582,7 @@ async function savePhoto(input) {
   const id = receiptTarget;
   input.value = '';
   if (!file || !id) return;
+  if (id === SCAN) return scanPhoto(file);
   const inSheet = sheet.open && sheetPurchase?.id === id;
   try {
     await api.setReceipt(id, await compressPhoto(file));
@@ -593,7 +613,8 @@ function openSheet(t) {
     <h2>${t ? 'Edit purchase' : 'Add purchase'}</h2>
     ${t ? '' : `<div class="quick"><label>Quick add<textarea id="quick-note" rows="2" maxlength="500" placeholder="Teh ais 1.50, roti canai 2 at Mamak XYZ"></textarea></label>
     <p class="error" id="quick-error" hidden></p>
-    <button type="button" class="text-action" data-draft>Read this</button></div>`}
+    <div class="quick-actions"><button type="button" class="text-action" data-draft>Read this</button>
+    <button type="button" class="text-action" data-scan-new>${icon('receipt')}Scan a receipt</button></div></div>`}
     ${fromReceipt ? '<p class="error">Check these details against your receipt.</p>' : ''}
     <label>${t?.bill_sen ? 'Your share (RM)' : 'Amount (RM)'}<input name="amount" inputmode="decimal" required value="${t ? (t.amount_sen / 100).toFixed(2) : ''}"></label>
     ${t?.bill_sen ? `<p class="hint">Bill total ${formatRM(t.bill_sen)}. Changing your share changes the total.</p>` : ''}
@@ -604,6 +625,7 @@ function openSheet(t) {
     <label>Time<input name="time" type="time" required value="${when.time}"></label></div>
     ${t ? `<button type="button" class="split-row" data-split-open>${icon('split')}<span>${t.bill_sen ? 'Split with friends' : 'Split this bill'}</span>
       <span>${t.bill_sen ? (t.owed_sen ? `${formatRM(t.owed_sen)} owed` : 'Settled') : ''}</span></button>` : ''}
+    ${t ? `<button type="button" class="split-row" data-pick-items>${icon('receipt')}<span>Pick my items from the receipt</span><span></span></button>` : ''}
     ${t ? '<div id="receipt-area"></div>' : ''}
     <p class="error" hidden></p>
     <div class="actions">${t ? '<button type="button" class="quiet" data-del>Delete</button>' : '<button type="button" class="quiet" data-close>Cancel</button>'}
@@ -623,6 +645,8 @@ function openSheet(t) {
   };
   form.querySelector('[data-close]')?.addEventListener('click', () => sheet.close());
   form.querySelector('[data-split-open]')?.addEventListener('click', () => openSplitSheet(t));
+  form.querySelector('[data-scan-new]')?.addEventListener('click', () => openScanSource(null));
+  form.querySelector('[data-pick-items]')?.addEventListener('click', () => (t.has_receipt ? scanReceipt({ transaction_id: t.id }, t, null) : openScanSource(t)));
   form.querySelector('[data-draft]')?.addEventListener('click', async (e) => {
     const button = e.currentTarget;
     const error = form.querySelector('#quick-error');
@@ -645,7 +669,7 @@ function openSheet(t) {
 }
 
 // Friends' shares are edited here. Your share is whatever the friends don't owe.
-async function openSplitSheet(t) {
+async function openSplitSheet(t, { mine: fixed = null } = {}) {
   sheet.innerHTML = '<form method="dialog"><h2>Split bill</h2><p class="hint">Loading</p></form>';
   if (!sheet.open) sheet.showModal();
   let data;
@@ -658,14 +682,24 @@ async function openSplitSheet(t) {
   const bill = data.bill_sen;
   const friends = data.shares.map((s) => ({ friend: s.friend, amount_sen: s.amount_sen, paid: s.paid }));
   let equal = !friends.length || friends.every((f) => f.amount_sen === equalShares(bill, friends.length).each);
+  // A share worked out from receipt items stays fixed, and friends split what's left.
+  let fixedMine = fixed !== null && fixed > 0 && fixed < bill ? fixed : null;
   const mine = () => bill - friends.reduce((a, f) => a + f.amount_sen, 0);
-  const spread = () => { if (equal) { const { each } = equalShares(bill, friends.length); friends.forEach((f) => { f.amount_sen = each; }); } };
+  const spread = () => {
+    if (fixedMine !== null && friends.length) {
+      const rest = bill - fixedMine;
+      const each = Math.floor(rest / friends.length);
+      friends.forEach((f, i) => { f.amount_sen = each + (i === 0 ? rest - each * friends.length : 0); });
+    } else if (equal) { const { each } = equalShares(bill, friends.length); friends.forEach((f) => { f.amount_sen = each; }); }
+  };
+  if (fixedMine !== null) { equal = false; spread(); }
   const has = (name) => friends.some((f) => f.friend.toLowerCase() === name.toLowerCase());
 
   const draw = (message = '') => {
     const picks = data.recent.filter((n) => !has(n)).slice(0, 8);
     sheet.innerHTML = `<form method="dialog" class="split-sheet"><h2>Split ${formatRM(bill)}</h2>
       <p class="hint">${esc(t.merchant)}${t.item ? `, ${esc(t.item)}` : ''}</p>
+      ${fixedMine !== null ? `<p class="hint">Your items come to ${formatRM(fixedMine)}, so friends split the other ${formatRM(bill - fixedMine)}.</p>` : ''}
       <div class="add-friend"><input id="friend-name" maxlength="60" autocomplete="off" placeholder="Friend's name" aria-label="Friend's name">
         <button type="button" data-friend-add>Add</button></div>
       ${picks.length ? `<div class="chips">${picks.map((n) => `<button type="button" class="chip" data-friend-pick="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : ''}
@@ -693,6 +727,7 @@ async function openSplitSheet(t) {
       if (e.target.dataset.share === undefined) return;
       friends[Number(e.target.dataset.share)].amount_sen = Math.round(parseFloat(e.target.value || '0') * 100) || 0;
       equal = false;
+      fixedMine = null;
       const b = form.querySelector('.split-mine b');
       b.textContent = formatRM(mine());
       b.classList.toggle('bad', mine() <= 0);
@@ -705,7 +740,7 @@ async function openSplitSheet(t) {
       if (d.friendAdd !== undefined) add(nameInput.value);
       else if (d.friendPick) add(d.friendPick);
       else if (d.shareRemove) { friends.splice(Number(d.shareRemove), 1); spread(); draw(); }
-      else if (d.equal !== undefined) { equal = true; spread(); draw(); }
+      else if (d.equal !== undefined) { equal = true; fixedMine = null; spread(); draw(); }
       else if (d.close !== undefined) sheet.close();
       else if (d.unsplit !== undefined) {
         // A second tap confirms, since paid-back records for this bill are cleared.
@@ -760,6 +795,136 @@ async function openFriendSheet(name) {
   if (!friend) return refresh();
   draw();
   sheet.showModal();
+}
+
+// Receipt scanning: a photo is read into items, you pick yours, and tax and charges are shared in proportion.
+const SCAN = Symbol('scan');
+let scanPurchase = null;
+
+function openScanSource(purchase) {
+  scanPurchase = purchase;
+  sheet.innerHTML = `<form method="dialog"><div class="sheet-head"><h2>Scan a receipt</h2>
+    <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
+    <p class="hint">Use the itemised receipt, flat and in good light, with every line and the total in view.</p>
+    <div class="photo-actions"><button type="button" data-scan-camera>${icon('camera')}<span>Take photo</span></button>
+      <button type="button" data-scan-library>${icon('photo')}<span>Upload</span></button></div></form>`;
+  sheet.querySelector('[data-close]').onclick = () => sheet.close();
+  sheet.querySelector('[data-scan-camera]').onclick = () => { receiptTarget = SCAN; receiptInput.click(); };
+  sheet.querySelector('[data-scan-library]').onclick = () => { receiptTarget = SCAN; receiptLibrary.click(); };
+  if (!sheet.open) sheet.showModal();
+}
+
+async function scanPhoto(file) {
+  let photo;
+  try { photo = await compressPhoto(file); } catch (err) { return scanFailed(err.message); }
+  // A photo taken for a logged purchase is kept as its receipt.
+  if (scanPurchase) api.setReceipt(scanPurchase.id, photo).then(() => { scanPurchase.has_receipt = 1; }).catch(() => {});
+  scanReceipt({ image: photo }, scanPurchase, photo);
+}
+
+function scanFailed(message) {
+  sheet.innerHTML = `<form method="dialog"><div class="sheet-head"><h2>Scan a receipt</h2>
+    <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
+    <p class="error">${esc(message)}</p>
+    <div class="actions end"><button type="button" class="primary" data-retry>Try another photo</button></div></form>`;
+  sheet.querySelector('[data-close]').onclick = () => sheet.close();
+  sheet.querySelector('[data-retry]').onclick = () => openScanSource(scanPurchase);
+  if (!sheet.open) sheet.showModal();
+}
+
+async function scanReceipt(body, purchase, photo) {
+  scanPurchase = purchase;
+  sheet.innerHTML = `<form method="dialog"><h2>Reading the receipt</h2>
+    <p class="hint">Finding each item and the total. This can take up to half a minute.</p><div class="scan-wait" aria-hidden="true"></div></form>`;
+  if (!sheet.open) sheet.showModal();
+  try {
+    openItemsSheet(await api.receiptItems(body), purchase, photo);
+  } catch (err) {
+    if (err.message !== 'unauthorized') scanFailed(err.message || "The receipt couldn't be read.");
+  }
+}
+
+function openItemsSheet(receipt, purchase, photo) {
+  const picks = {};
+  const bill = purchase ? (purchase.bill_sen ?? purchase.amount_sen) : receipt.total_sen;
+  const unit = (it) => formatRM(Math.round(it.amount_sen / it.qty));
+  sheet.innerHTML = `<form method="dialog" class="items-sheet"><div class="sheet-head"><h2>Which items are yours?</h2>
+      <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
+    <p class="hint">${receipt.merchant ? `${esc(receipt.merchant)}, ` : ''}receipt total ${formatRM(receipt.total_sen)}</p>
+    ${receipt.mismatch_sen ? `<p class="flag-note">The lines add up to ${formatRM(receipt.items_sen + receipt.charges_sen)}, not ${formatRM(receipt.total_sen)}, so a line may have been misread or missed. Check against the receipt before saving.</p>` : ''}
+    <div class="item-list">${receipt.items.map((it) => (it.qty > 1
+      ? `<div class="item-row"><span><b>${esc(it.name)}</b><small>${it.qty} × ${unit(it)}</small></span>
+          <span class="stepper"><button type="button" data-units="${it.id}:-1" aria-label="One less ${esc(it.name)}">−</button>
+          <output id="u-${it.id}">0</output><button type="button" data-units="${it.id}:1" aria-label="One more ${esc(it.name)}">+</button></span></div>`
+      : `<label class="item-row"><span><b>${esc(it.name)}</b><small>${formatRM(it.amount_sen)}</small></span>
+          <input type="checkbox" data-pick="${it.id}" aria-label="${esc(it.name)} is mine"></label>`)).join('')}</div>
+    ${receipt.charges.length ? `<p class="hint charges">${receipt.charges.map((c) => `${esc(c.name)} ${formatRM(c.amount_sen)}`).join(' · ')}</p>` : ''}
+    <div class="share-box"><div><span>Your items</span><b id="sh-items">RM0.00</b></div>
+      <div><span>Your part of tax and charges</span><b id="sh-extra">RM0.00</b></div>
+      <div class="total"><span>Your share</span><b id="sh-total">RM0.00</b></div></div>
+    ${purchase && bill !== receipt.total_sen ? `<p class="hint">Worked out from the ${formatRM(bill)} you paid, not the receipt total.</p>` : ''}
+    ${purchase ? '' : `<label>Where<input name="merchant" required maxlength="120" value="${esc(receipt.merchant || '')}" placeholder="Restoran XYZ"></label>
+      <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${c === 'Food' ? 'selected' : ''}>${c}</option>`).join('')}</select></label>`}
+    <p class="error" hidden></p>
+    <div class="actions">${purchase ? '<button type="button" class="quiet" data-set-mine>Set as my amount</button><button type="button" class="primary" data-split-rest>Split the rest</button>'
+      : '<span></span><button class="primary" data-log-share>Log my share</button>'}</div></form>`;
+  const form = sheet.querySelector('form');
+  const error = (m) => { const p = form.querySelector('.error'); p.hidden = !m; p.textContent = m || ''; };
+  const current = () => shareOf(receipt, picks, bill);
+  const update = () => {
+    const r = current();
+    form.querySelector('#sh-items').textContent = formatRM(r.items_sen);
+    form.querySelector('#sh-extra').textContent = formatRM(r.extra_sen);
+    form.querySelector('#sh-total').textContent = formatRM(r.share_sen);
+    const none = r.share_sen <= 0;
+    form.querySelectorAll('.actions button').forEach((b) => { b.disabled = none; });
+    const log = form.querySelector('[data-log-share]');
+    if (log) log.textContent = none ? 'Log my share' : `Log ${formatRM(r.share_sen)}`;
+    const rest = form.querySelector('[data-split-rest]');
+    if (rest) rest.disabled = none || r.share_sen >= bill;
+  };
+  form.addEventListener('change', (e) => { if (e.target.dataset.pick) { picks[e.target.dataset.pick] = e.target.checked ? 1 : 0; update(); } });
+  form.addEventListener('click', async (e) => {
+    const el = e.target.closest('button');
+    if (!el) return;
+    if (el.dataset.close !== undefined) return sheet.close();
+    if (el.dataset.units) {
+      const [id, step] = el.dataset.units.split(':');
+      const it = receipt.items.find((x) => x.id === id);
+      picks[id] = Math.min(Math.max((picks[id] || 0) + Number(step), 0), it.qty);
+      form.querySelector(`#u-${id}`).textContent = picks[id];
+      update();
+      return;
+    }
+    if (!purchase) return;
+    const r = current();
+    const names = pickedNames(receipt, picks);
+    try {
+      if (el.dataset.setMine !== undefined) {
+        await api.update(purchase.id, { amount: (r.share_sen / 100).toFixed(2), ...(purchase.item ? {} : { item: names }) });
+        sheet.close();
+      } else if (el.dataset.splitRest !== undefined) {
+        if (!purchase.item && names) { await api.update(purchase.id, { item: names }); purchase.item = names; }
+        openSplitSheet(purchase, { mine: r.share_sen });
+      }
+    } catch (err) { error(err.message); }
+  });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const r = current();
+    if (r.share_sen <= 0) return error('Pick at least one item.');
+    const now = new Date();
+    try {
+      const row = await api.add({ amount: (r.share_sen / 100).toFixed(2), merchant: form.elements.merchant.value.trim(), item: pickedNames(receipt, picks),
+        category: form.elements.category.value, date: localDate(now), time: localParts(now.toISOString()).time });
+      if (photo && row?.id) await api.setReceipt(row.id, photo).catch(() => {});
+      sheet.close();
+      if (page === 'day') { date = localDate(now); selected = null; }
+      refresh();
+    } catch (err) { error(err.message); }
+  };
+  update();
+  if (!sheet.open) sheet.showModal();
 }
 
 // Nothing from Quick add is saved until it's confirmed here.

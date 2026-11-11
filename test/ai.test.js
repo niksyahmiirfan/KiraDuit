@@ -373,3 +373,29 @@ test('an unreadable TNG scan is logged under the TNG placeholder for checking', 
   await post('/api/ingest', scan("Touch 'n Go eWallet\nRM 24.60\nTransferred\nReceiver\nRemark\nAHMAD RUSYAIDI BIN"));
   assert.deepEqual([rows()[0].merchant, rows()[0].needs_review], ['TNG eWallet QR', 1]);
 });
+
+test('a receipt photo is read into items through the vision model', async () => {
+  const reading = { merchant: 'Restoran Tomyam', items: [{ name: 'Nasi Goreng', qty: 1, amount: 12 }, { name: 'Teh Ais', qty: 2, amount: 7 }], charges: [{ name: 'SST', amount: 1.14 }], total: 20.14 };
+  const { env, post, rows, calls } = setup(reading);
+  const res = await call(env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' });
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.deepEqual(body.items.map((i) => [i.name, i.amount_sen]), [['Nasi Goreng', 1200], ['Teh Ais', 700]]);
+  assert.equal(body.total_sen, 2014);
+  assert.equal(calls[0].messages[1].content[1].image_url.url, 'data:image/jpeg;base64,aGVsbG8=');
+
+  await post('/api/transactions', { amount: '20.14', merchant: 'Restoran Tomyam', category: 'Food', date: '2026-11-11', time: '13:00' });
+  env.DB.raw.prepare("INSERT INTO receipts (transaction_id, image, created_at) VALUES (?, 'aGk=', 'x')").run(rows()[0].id);
+  assert.equal((await call(env, 'POST', '/api/receipt-items', { transaction_id: rows()[0].id })).status, 200);
+  assert.equal(calls[1].messages[1].content[1].image_url.url, 'data:image/jpeg;base64,aGk=');
+});
+
+test('receipt scanning explains when it cannot help', async () => {
+  assert.equal((await call(setup().env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).status, 503);
+  const { env } = setup({ items: [] });
+  assert.equal((await call(env, 'POST', '/api/receipt-items', {})).status, 422);
+  assert.equal((await call(env, 'POST', '/api/receipt-items', { image: 'not base64!' })).status, 422);
+  assert.match((await (await call(env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).json()).error, /No items/);
+  const failing = setup([new Error('down')]).env;
+  assert.equal((await call(failing, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).status, 503);
+});
