@@ -1,7 +1,8 @@
 import { detectWallet, parseMoney, parseReceipt, parseWalletAmount, guessCategory, merchantKey } from './parse.js';
 import { authenticate, login, logout } from './auth.js';
+import { cleanReceipt } from '../public/receipt.js';
 import { cleanShares, groupOwed, splitHint, usualFood } from '../public/split.js';
-import { aiEnabled, draftPurchases, readReceipt, suggestCategory } from './ai.js';
+import { aiEnabled, draftPurchases, readReceiptItems, readReceipt, suggestCategory } from './ai.js';
 import { CATEGORIES, addDays, allowanceFor, budgetLine, formatRM, localDate, payPeriod, periodFor, summarize, summarizePeriod, previousRange, toCsv, weekDates, windowStart } from '../public/summary.js';
 
 const json = (data, status = 200) =>
@@ -471,6 +472,24 @@ async function removeSplit(env, id) {
   return json({ ok: true });
 }
 
+const BASE64 = /^[A-Za-z0-9+/]+=*$/;
+
+/** Reads the items on a receipt photo, sent directly or already saved on a purchase. */
+async function receiptItems(request, env) {
+  if (!aiEnabled(env)) return json({ error: "Receipt scanning needs AI help, which isn't switched on." }, 503);
+  const body = await request.json().catch(() => ({}));
+  let image = typeof body.image === 'string' ? body.image : null;
+  if (!image && body.transaction_id) {
+    const row = await env.DB.prepare('SELECT image FROM receipts WHERE transaction_id = ?').bind(String(body.transaction_id)).first();
+    image = row?.image ?? null;
+  }
+  if (!image || image.length > 2000000 || !BASE64.test(image)) return json({ error: 'Add a photo of the receipt first.' }, 422);
+  const raw = await readReceiptItems(env, image);
+  if (!raw) return json({ error: "The receipt couldn't be read right now. Try again, or enter the amount yourself." }, 503);
+  const receipt = cleanReceipt(raw);
+  return receipt.error ? json(receipt, 422) : json(receipt);
+}
+
 async function loadOwed(env) {
   const { results } = await env.DB.prepare(
     `SELECT s.id, s.friend, s.amount_sen, t.id AS transaction_id, t.merchant, t.item, t.local_date FROM split_shares s
@@ -554,6 +573,7 @@ async function api(request, env, url) {
   }
 
   if (path === '/api/owed' && method === 'GET') return loadOwed(env);
+  if (path === '/api/receipt-items' && method === 'POST') return receiptItems(request, env);
   const share = path.match(/^\/api\/shares\/([\w-]+)$/);
   if (share && method === 'POST') {
     const body = await request.json().catch(() => ({}));
