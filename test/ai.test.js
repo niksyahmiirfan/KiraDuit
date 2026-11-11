@@ -383,6 +383,7 @@ test('a receipt photo is read into items through the vision model', async () => 
   assert.deepEqual(body.items.map((i) => [i.name, i.amount_sen]), [['Nasi Goreng', 1200], ['Teh Ais', 700]]);
   assert.equal(body.total_sen, 2014);
   assert.equal(calls[0].messages[1].content[1].image_url.url, 'data:image/jpeg;base64,aGVsbG8=');
+  assert.deepEqual(calls[0].chat_template_kwargs, { enable_thinking: false });
 
   await post('/api/transactions', { amount: '20.14', merchant: 'Restoran Tomyam', category: 'Food', date: '2026-11-11', time: '13:00' });
   env.DB.raw.prepare("INSERT INTO receipts (transaction_id, image, created_at) VALUES (?, 'aGk=', 'x')").run(rows()[0].id);
@@ -410,4 +411,21 @@ test('shortcuts default to the original three and save in order', async () => {
   assert.equal((await call(env, 'PUT', '/api/shortcuts', { shortcuts: [{ name: 'X', kind: 'link', target: 'javascript:1' }] })).status, 422);
   assert.equal((await call(env, 'PUT', '/api/shortcuts', { shortcuts: [] })).status, 200);
   assert.deepEqual((await (await call(env, 'GET', '/api/shortcuts')).json()).shortcuts, []);
+});
+
+test('a failed scan says why', async () => {
+  const slow = setup([new Error('timeout')]).env;
+  assert.deepEqual(await (await call(slow, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).json(),
+    { error: 'Reading the receipt took too long. Try again, or enter the items yourself.', reason: 'timeout' });
+  const { env } = setup({});
+  env.AI.run = async () => ({ choices: [{ message: { content: 'I cannot read this receipt.' } }] });
+  assert.equal((await (await call(env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).json()).reason, 'unreadable');
+  env.DB.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_usage', ?)").run(`${new Date().toISOString().slice(0, 10)}:150`);
+  assert.equal((await (await call(env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).json()).reason, 'limit');
+});
+
+test('an OpenAI-style reply with the JSON in choices is read', async () => {
+  const { env } = setup({});
+  env.AI.run = async () => ({ choices: [{ message: { content: '```json\n{"items":[{"name":"Teh Ais","qty":1,"amount":3.5}],"total":3.5}\n```' } }] });
+  assert.equal((await (await call(env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).json()).items_sen, 350);
 });

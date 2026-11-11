@@ -474,6 +474,13 @@ async function removeSplit(env, id) {
 }
 
 const BASE64 = /^[A-Za-z0-9+/]+=*$/;
+const SCAN_FAILURES = {
+  off: "Receipt scanning needs AI help, which isn't switched on.",
+  limit: "Today's AI allowance is used up. Enter the items yourself, or try again tomorrow.",
+  timeout: 'Reading the receipt took too long. Try again, or enter the items yourself.',
+  unreadable: "The receipt was read, but the answer couldn't be understood. Try again, or enter the items yourself.",
+  error: "The AI service couldn't read the receipt just now. Try again, or enter the items yourself.",
+};
 
 /** Reads the items on a receipt photo, sent directly or already saved on a purchase. */
 async function receiptItems(request, env) {
@@ -485,8 +492,8 @@ async function receiptItems(request, env) {
     image = row?.image ?? null;
   }
   if (!image || image.length > 2000000 || !BASE64.test(image)) return json({ error: 'Add a photo of the receipt first.' }, 422);
-  const raw = await readReceiptItems(env, image);
-  if (!raw) return json({ error: "The receipt couldn't be read right now. Try again, or enter the amount yourself." }, 503);
+  const { json: raw, reason } = await readReceiptItems(env, image);
+  if (!raw) return json({ error: SCAN_FAILURES[reason] || SCAN_FAILURES.error, reason }, 503);
   const receipt = cleanReceipt(raw);
   return receipt.error ? json(receipt, 422) : json(receipt);
 }

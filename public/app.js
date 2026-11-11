@@ -1,4 +1,4 @@
-import { cleanReceipt, pickedNames, shareOf } from './receipt.js';
+import { cleanReceipt, emptyReceipt, pickedNames, shareOf, withCheck } from './receipt.js';
 import { DEFAULT_SHORTCUTS, MAX_SHORTCUTS, cleanShortcut, cleanShortcuts, shortcutCaption, shortcutHref } from './shortcuts.js';
 import { cleanShares, equalShares, groupOwed, splitHint, usualFood } from './split.js';
 import { CATEGORIES, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
@@ -656,9 +656,9 @@ async function showReceiptArea(t, message = '') {
 }
 
 /** Shrinks a photo to a JPEG small enough to store, returned as base64. */
-async function compressPhoto(file) {
+async function compressPhoto(file, maxSide = 1400) {
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1400 / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
@@ -911,19 +911,22 @@ function openScanSource(purchase) {
 
 async function scanPhoto(file) {
   let photo;
-  try { photo = await compressPhoto(file); } catch (err) { return scanFailed(err.message); }
+  // Scans use a sharper photo, since long receipts have small print.
+  try { photo = await compressPhoto(file, 2000); } catch (err) { return scanFailed(err.message); }
   // A photo taken for a logged purchase is kept as its receipt.
   if (scanPurchase) api.setReceipt(scanPurchase.id, photo).then(() => { scanPurchase.has_receipt = 1; }).catch(() => {});
   scanReceipt({ image: photo }, scanPurchase, photo);
 }
 
-function scanFailed(message) {
+function scanFailed(message, photo = null) {
   sheet.innerHTML = `<form method="dialog"><div class="sheet-head"><h2>Scan a receipt</h2>
     <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
     <p class="error">${esc(message)}</p>
-    <div class="actions end"><button type="button" class="primary" data-retry>Try another photo</button></div></form>`;
+    <div class="actions"><button type="button" class="quiet" data-manual>Enter items myself</button>
+      <button type="button" class="primary" data-retry>Try again</button></div></form>`;
   sheet.querySelector('[data-close]').onclick = () => sheet.close();
   sheet.querySelector('[data-retry]').onclick = () => openScanSource(scanPurchase);
+  sheet.querySelector('[data-manual]').onclick = () => openItemsSheet(emptyReceipt(scanPurchase?.merchant ?? null), scanPurchase, photo);
   if (!sheet.open) sheet.showModal();
 }
 
@@ -935,90 +938,138 @@ async function scanReceipt(body, purchase, photo) {
   try {
     openItemsSheet(await api.receiptItems(body), purchase, photo);
   } catch (err) {
-    if (err.message !== 'unauthorized') scanFailed(err.message || "The receipt couldn't be read.");
+    if (err.message !== 'unauthorized') scanFailed(err.message || "The receipt couldn't be read.", photo);
   }
 }
 
-function openItemsSheet(receipt, purchase, photo) {
+function openItemsSheet(read, purchase, photo) {
+  // Prices can be corrected and missed items added, so the receipt is kept as editable state.
+  let receipt = withCheck({ ...read, items: read.items.map((it) => ({ ...it })) });
   const picks = {};
-  const bill = purchase ? (purchase.bill_sen ?? purchase.amount_sen) : receipt.total_sen;
+  let nextId = receipt.items.length;
+  const fixedBill = purchase ? (purchase.bill_sen ?? purchase.amount_sen) : null;
+  const bill = () => fixedBill ?? (receipt.total_sen || receipt.items_sen + receipt.charges_sen);
+  const money = (v) => Math.round(parseFloat(String(v).replace(/[^\d.]/g, '')) * 100) || 0;
   const unit = (it) => formatRM(Math.round(it.amount_sen / it.qty));
-  sheet.innerHTML = `<form method="dialog" class="items-sheet"><div class="sheet-head"><h2>Which items are yours?</h2>
-      <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
-    <p class="hint">${receipt.merchant ? `${esc(receipt.merchant)}, ` : ''}receipt total ${formatRM(receipt.total_sen)}</p>
-    ${receipt.mismatch_sen ? `<p class="flag-note">The lines add up to ${formatRM(receipt.items_sen + receipt.charges_sen)}, not ${formatRM(receipt.total_sen)}, so a line may have been misread or missed. Check against the receipt before saving.</p>` : ''}
-    <div class="item-list">${receipt.items.map((it) => (it.qty > 1
-      ? `<div class="item-row"><span><b>${esc(it.name)}</b><small>${it.qty} × ${unit(it)}</small></span>
-          <span class="stepper"><button type="button" data-units="${it.id}:-1" aria-label="One less ${esc(it.name)}">−</button>
-          <output id="u-${it.id}">0</output><button type="button" data-units="${it.id}:1" aria-label="One more ${esc(it.name)}">+</button></span></div>`
-      : `<label class="item-row"><span><b>${esc(it.name)}</b><small>${formatRM(it.amount_sen)}</small></span>
-          <input type="checkbox" data-pick="${it.id}" aria-label="${esc(it.name)} is mine"></label>`)).join('')}</div>
-    ${receipt.charges.length ? `<p class="hint charges">${receipt.charges.map((c) => `${esc(c.name)} ${formatRM(c.amount_sen)}`).join(' · ')}</p>` : ''}
-    <div class="share-box"><div><span>Your items</span><b id="sh-items">RM0.00</b></div>
-      <div><span>Your part of tax and charges</span><b id="sh-extra">RM0.00</b></div>
-      <div class="total"><span>Your share</span><b id="sh-total">RM0.00</b></div></div>
-    ${purchase && bill !== receipt.total_sen ? `<p class="hint">Worked out from the ${formatRM(bill)} you paid, not the receipt total.</p>` : ''}
-    ${purchase ? '' : `<label>Where<input name="merchant" required maxlength="120" value="${esc(receipt.merchant || '')}" placeholder="Restoran XYZ"></label>
-      <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${c === 'Food' ? 'selected' : ''}>${c}</option>`).join('')}</select></label>`}
-    <p class="error" hidden></p>
-    <div class="actions">${purchase ? '<button type="button" class="quiet" data-set-mine>Set as my amount</button><button type="button" class="primary" data-split-rest>Split the rest</button>'
-      : '<span></span><button class="primary" data-log-share>Log my share</button>'}</div></form>`;
-  const form = sheet.querySelector('form');
+  const row = (it) => `<div class="item-row" data-row="${it.id}">
+      <span class="item-name"><b>${esc(it.name)}</b>${it.qty > 1 ? `<small>${it.qty} × ${unit(it)}</small>` : ''}</span>
+      <input class="item-price" data-price="${it.id}" inputmode="decimal" value="${(it.amount_sen / 100).toFixed(2)}" aria-label="Price of ${esc(it.name)}, in RM">
+      ${it.qty > 1
+        ? `<span class="stepper"><button type="button" data-units="${it.id}:-1" aria-label="One less ${esc(it.name)}">−</button>
+           <output id="u-${it.id}">${picks[it.id] || 0}</output><button type="button" data-units="${it.id}:1" aria-label="One more ${esc(it.name)}">+</button></span>`
+        : `<input type="checkbox" data-pick="${it.id}" ${picks[it.id] ? 'checked' : ''} aria-label="${esc(it.name)} is mine">`}</div>`;
+
+  const draw = () => {
+    sheet.innerHTML = `<form method="dialog" class="items-sheet"><div class="sheet-head"><h2>Which items are yours?</h2>
+        <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
+      <p class="hint">${receipt.items.length ? 'Tick your items. Tap a price to correct it.' : 'Add each item and its price from the receipt, then tick yours.'}</p>
+      <p class="flag-note" id="mismatch" hidden></p>
+      <div class="item-list">${receipt.items.map(row).join('')}</div>
+      <div class="add-item"><input id="new-item" maxlength="60" placeholder="Missing item" aria-label="Item name">
+        <input id="new-price" inputmode="decimal" placeholder="RM" aria-label="Item price, in RM"><button type="button" data-add-item>Add</button></div>
+      ${receipt.charges.length ? `<p class="hint charges">${receipt.charges.map((c) => `${esc(c.name)} ${formatRM(c.amount_sen)}`).join(' · ')}</p>` : ''}
+      <label class="total-field">Receipt total (RM)<input id="receipt-total" inputmode="decimal" value="${receipt.total_sen ? (receipt.total_sen / 100).toFixed(2) : ''}" placeholder="Including tax and charges"></label>
+      <div class="share-box"><div><span>Your items</span><b id="sh-items">RM0.00</b></div>
+        <div><span>Your part of tax and charges</span><b id="sh-extra">RM0.00</b></div>
+        <div class="total"><span>Your share</span><b id="sh-total">RM0.00</b></div></div>
+      ${fixedBill !== null && fixedBill !== receipt.total_sen ? `<p class="hint">Worked out from the ${formatRM(fixedBill)} you paid.</p>` : ''}
+      ${purchase ? '' : `<label>Where<input name="merchant" required maxlength="120" value="${esc(receipt.merchant || '')}" placeholder="Restoran XYZ"></label>
+        <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${c === 'Food' ? 'selected' : ''}>${c}</option>`).join('')}</select></label>`}
+      <p class="error" hidden></p>
+      <div class="actions">${purchase ? '<button type="button" class="quiet" data-set-mine>Set as my amount</button><button type="button" class="primary" data-split-rest>Split the rest</button>'
+        : '<span></span><button class="primary" data-log-share>Log my share</button>'}</div></form>`;
+    wire();
+    update();
+  };
+
+  let form;
   const error = (m) => { const p = form.querySelector('.error'); p.hidden = !m; p.textContent = m || ''; };
-  const current = () => shareOf(receipt, picks, bill);
+  const current = () => shareOf(receipt, picks, bill());
   const update = () => {
     const r = current();
     form.querySelector('#sh-items').textContent = formatRM(r.items_sen);
     form.querySelector('#sh-extra').textContent = formatRM(r.extra_sen);
     form.querySelector('#sh-total').textContent = formatRM(r.share_sen);
+    const note = form.querySelector('#mismatch');
+    const target = receipt.subtotal_sen ?? receipt.total_sen - receipt.charges_sen;
+    note.hidden = !receipt.mismatch_sen || !receipt.items.length;
+    note.textContent = `The items add up to ${formatRM(receipt.items_sen)}, but the receipt ${receipt.subtotal_sen ? 'subtotal' : 'total before charges'} is ${formatRM(target)}. A price may be misread or an item missed. Correct it below.`;
     const none = r.share_sen <= 0;
     form.querySelectorAll('.actions button').forEach((b) => { b.disabled = none; });
     const log = form.querySelector('[data-log-share]');
     if (log) log.textContent = none ? 'Log my share' : `Log ${formatRM(r.share_sen)}`;
     const rest = form.querySelector('[data-split-rest]');
-    if (rest) rest.disabled = none || r.share_sen >= bill;
+    if (rest) rest.disabled = none || r.share_sen >= bill();
   };
-  form.addEventListener('change', (e) => { if (e.target.dataset.pick) { picks[e.target.dataset.pick] = e.target.checked ? 1 : 0; update(); } });
-  form.addEventListener('click', async (e) => {
-    const el = e.target.closest('button');
-    if (!el) return;
-    if (el.dataset.close !== undefined) return sheet.close();
-    if (el.dataset.units) {
-      const [id, step] = el.dataset.units.split(':');
-      const it = receipt.items.find((x) => x.id === id);
-      picks[id] = Math.min(Math.max((picks[id] || 0) + Number(step), 0), it.qty);
-      form.querySelector(`#u-${id}`).textContent = picks[id];
-      update();
-      return;
-    }
-    if (!purchase) return;
-    const r = current();
-    const names = pickedNames(receipt, picks);
-    try {
-      if (el.dataset.setMine !== undefined) {
-        await api.update(purchase.id, { amount: (r.share_sen / 100).toFixed(2), ...(purchase.item ? {} : { item: names }) });
-        sheet.close();
-      } else if (el.dataset.splitRest !== undefined) {
-        if (!purchase.item && names) { await api.update(purchase.id, { item: names }); purchase.item = names; }
-        openSplitSheet(purchase, { mine: r.share_sen });
+
+  const wire = () => {
+    form = sheet.querySelector('form');
+    form.addEventListener('change', (e) => { if (e.target.dataset.pick) { picks[e.target.dataset.pick] = e.target.checked ? 1 : 0; update(); } });
+    form.addEventListener('input', (e) => {
+      if (e.target.dataset.price) {
+        const it = receipt.items.find((x) => x.id === e.target.dataset.price);
+        it.amount_sen = money(e.target.value);
+        receipt = withCheck(receipt);
+        update();
+      } else if (e.target.id === 'receipt-total') {
+        receipt = withCheck({ ...receipt, total_sen: money(e.target.value) });
+        update();
       }
-    } catch (err) { error(err.message); }
-  });
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const r = current();
-    if (r.share_sen <= 0) return error('Pick at least one item.');
-    const now = new Date();
-    try {
-      const row = await api.add({ amount: (r.share_sen / 100).toFixed(2), merchant: form.elements.merchant.value.trim(), item: pickedNames(receipt, picks),
-        category: form.elements.category.value, date: localDate(now), time: localParts(now.toISOString()).time });
-      if (photo && row?.id) await api.setReceipt(row.id, photo).catch(() => {});
-      sheet.close();
-      if (page === 'day') { date = localDate(now); selected = null; }
-      refresh();
-    } catch (err) { error(err.message); }
+    });
+    form.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.target.id === 'new-item' || e.target.id === 'new-price')) { e.preventDefault(); form.querySelector('[data-add-item]').click(); } });
+    form.addEventListener('click', async (e) => {
+      const el = e.target.closest('button');
+      if (!el) return;
+      if (el.dataset.close !== undefined) return sheet.close();
+      if (el.dataset.addItem !== undefined) {
+        const name = form.querySelector('#new-item').value.trim();
+        const amount_sen = money(form.querySelector('#new-price').value);
+        if (!name || amount_sen <= 0) return error('Enter the item name and its price.');
+        receipt.items.push({ id: `m${nextId++}`, name: name.slice(0, 60), qty: 1, amount_sen });
+        // With no total read, the total follows the items until one is entered.
+        receipt = withCheck({ ...receipt, total_sen: receipt.total_sen || 0 });
+        draw();
+        form.querySelector('#new-item').focus();
+        return;
+      }
+      if (el.dataset.units) {
+        const [id, step] = el.dataset.units.split(':');
+        const it = receipt.items.find((x) => x.id === id);
+        picks[id] = Math.min(Math.max((picks[id] || 0) + Number(step), 0), it.qty);
+        form.querySelector(`#u-${id}`).textContent = picks[id];
+        update();
+        return;
+      }
+      if (!purchase) return;
+      const r = current();
+      const names = pickedNames(receipt, picks);
+      try {
+        if (el.dataset.setMine !== undefined) {
+          await api.update(purchase.id, { amount: (r.share_sen / 100).toFixed(2), ...(purchase.item ? {} : { item: names }) });
+          sheet.close();
+        } else if (el.dataset.splitRest !== undefined) {
+          if (!purchase.item && names) { await api.update(purchase.id, { item: names }); purchase.item = names; }
+          openSplitSheet(purchase, { mine: r.share_sen });
+        }
+      } catch (err) { error(err.message); }
+    });
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const r = current();
+      if (r.share_sen <= 0) return error('Tick at least one item, and check the receipt total.');
+      const now = new Date();
+      try {
+        const added = await api.add({ amount: (r.share_sen / 100).toFixed(2), merchant: form.elements.merchant.value.trim(), item: pickedNames(receipt, picks),
+          category: form.elements.category.value, date: localDate(now), time: localParts(now.toISOString()).time });
+        if (photo && added?.id) await api.setReceipt(added.id, photo).catch(() => {});
+        sheet.close();
+        if (page === 'day') { date = localDate(now); selected = null; }
+        refresh();
+      } catch (err) { error(err.message); }
+    };
   };
-  update();
+
+  draw();
   if (!sheet.open) sheet.showModal();
 }
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanReceipt, pickedNames, shareOf } from '../public/receipt.js';
+import { cleanReceipt, emptyReceipt, pickedNames, shareOf, withCheck } from '../public/receipt.js';
 
 const dinner = cleanReceipt({
   merchant: 'Restoran Tomyam',
@@ -49,4 +49,21 @@ test('a total that does not match the lines is flagged; a missing total is worke
   assert.equal(cleanReceipt({ items: [{ name: 'A', amount: 10 }], charges: [{ name: 'SST', amount: 0.6 }] }).total_sen, 1060);
   assert.match(cleanReceipt({ items: [] }).error, /No items/);
   assert.match(cleanReceipt(null).error, /No items/);
+});
+
+test('the printed subtotal catches a misread price, and correcting it clears the warning', () => {
+  const murni = cleanReceipt({ items: [{ name: 'Nasi Tong', amount: 11.23 }, { name: 'Barley', amount: 2.47 }, { name: 'Indomee', amount: 75.92 }], subtotal: 89.62, charges: [{ name: 'Tax', amount: 5.38 }], total: 95 });
+  assert.equal(murni.mismatch_sen, 0);
+  const misread = cleanReceipt({ items: [{ name: 'Nasi Tong', amount: 11.23 }, { name: 'Barley', amount: 27.4 }, { name: 'Indomee', amount: 75.92 }], subtotal: 89.62, total: 95 });
+  assert.equal(misread.mismatch_sen, 8962 - 11455);
+  misread.items[1].amount_sen = 247;
+  assert.equal(withCheck(misread).mismatch_sen, 0);
+});
+
+test('typing items in by hand starts empty and uses the items when no total is entered', () => {
+  const r = emptyReceipt('Murni');
+  r.items.push({ id: 'm0', name: 'Nasi Tong', qty: 1, amount_sen: 1123 }, { id: 'm1', name: 'Barley', qty: 1, amount_sen: 274 });
+  const checked = withCheck(r);
+  assert.equal(shareOf(checked, { m0: 1 }).share_sen, 1123);
+  assert.equal(shareOf({ ...checked, total_sen: 1500 }, { m0: 1 }).share_sen, Math.round((1500 * 1123) / 1397));
 });
