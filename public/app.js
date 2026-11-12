@@ -78,8 +78,8 @@ function demoWithSplits(txs) {
 const commitmentsTotal = () => demoCommitments.reduce((a, c) => a + c.amount_sen, 0);
 function demoBudget(d) {
   if (demoBudgets[d]) return { amount: demoBudgets[d], source: 'set' };
-  if (d !== localDate()) return { amount: null, source: null };
   if (demoDefault) return { amount: demoDefault, source: 'default' };
+  if (d > localDate()) return { amount: null, source: null };
   const spentBefore = demoTxs.filter((t) => t.local_date >= payPeriod(d).start && t.local_date < d).reduce((a, t) => a + t.amount_sen, 0);
   const amount = allowanceFor({ income: demoIncome, commitments: commitmentsTotal(), spentBefore, today: d });
   return { amount, source: amount ? 'allowance' : null };
@@ -595,7 +595,7 @@ function render() {
     </header>
     ${bigTotal(s.total)}
     ${verdict(s)}
-    ${date === today || s.budget ? budgetStrip(s.total, s.budget, date === today ? 'Today' : 'Budget', date, s.budgetSource) : ''}
+    ${budgetStrip(s.total, s.budget, date === today ? 'Today' : 'Budget', date, s.budgetSource)}
     ${splitPrompt(s)}
     ${date === today ? receiptPrompt([...s.transactions].reverse().find((t) => t.source === 'shopeepay_qr' && !t.has_receipt)) + eveningCheck(today) : ''}
     ${ribbon(s)}

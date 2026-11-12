@@ -429,3 +429,21 @@ test('an OpenAI-style reply with the JSON in choices is read', async () => {
   env.AI.run = async () => ({ choices: [{ message: { content: '```json\n{"items":[{"name":"Teh Ais","qty":1,"amount":3.5}],"total":3.5}\n```' } }] });
   assert.equal((await (await call(env, 'POST', '/api/receipt-items', { image: 'aGVsbG8=' })).json()).items_sen, 350);
 });
+
+test('a past day keeps the default budget, and its budget can be set', async () => {
+  const { env, post } = setup();
+  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const past = new Date(Date.now() + 8 * 3600e3 - 2 * 86400e3).toISOString().slice(0, 10);
+  const future = new Date(Date.now() + 8 * 3600e3 + 2 * 86400e3).toISOString().slice(0, 10);
+  await post('/api/transactions', { amount: '76.00', merchant: 'TNG', category: 'Other', date: past, time: '14:06' });
+  const before = await (await call(env, 'GET', `/api/summary?date=${past}`)).json();
+  assert.equal(before.budget, null);
+  env.DB.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_budget_sen', '3000')").run();
+  const withDefault = await (await call(env, 'GET', `/api/summary?date=${past}`)).json();
+  assert.deepEqual([withDefault.budget, withDefault.budgetSource], [3000, 'default']);
+  assert.equal((await (await call(env, 'GET', `/api/summary?date=${future}`)).json()).budget, 3000);
+  await call(env, 'POST', `/api/budget?date=${past}`, { amount: '50' });
+  const set = await (await call(env, 'GET', `/api/summary?date=${past}`)).json();
+  assert.deepEqual([set.budget, set.budgetSource], [5000, 'set']);
+  assert.equal((await (await call(env, 'GET', `/api/summary?date=${today}`)).json()).budget, 3000);
+});
