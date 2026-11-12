@@ -178,6 +178,16 @@ input, select { display: block; width: 100%; height: 48px; margin-top: 4px; padd
 .stepper output { min-width: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .charges { font-size: 14px; }
 .item-name { flex: 1; min-width: 0; }
+.people { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.person { min-height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 20px; font-weight: 500; }
+.person.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.person.add { color: var(--soft); border-style: dashed; }
+.badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.badges:empty { display: none; }
+.who { padding: 1px 7px; border-radius: 10px; background: var(--line); color: var(--ink); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.who.me { background: var(--ink); color: var(--paper); }
+.leftover { gap: 8px; }
+.leftover select { width: auto; min-height: 36px; margin: 0; padding: 0 8px; font-size: 15px; }
 .item-price { flex: none; width: 84px; height: 40px; margin: 0; padding: 0 8px; text-align: right; font-size: 16px; font-variant-numeric: tabular-nums; }
 .add-item { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 .add-item input { margin: 0; height: 44px; }

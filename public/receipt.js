@@ -69,3 +69,43 @@ export function pickedNames(receipt, picks) {
   return receipt.items.filter((it) => picks[it.id] > 0)
     .map((it) => (picks[it.id] > 1 ? `${picks[it.id]}× ${it.name}` : it.name)).join(', ').slice(0, 120);
 }
+
+/**
+ * Shares a bill between people by the items each had.
+ * assign maps item id to { personKey: units }. Several people on one unit share it equally.
+ * people is [{ key, name }] with you first, key 'me'.
+ * Tax and charges follow each person's items. Items nobody picked are, with friends present,
+ * split equally ('equal') or left with you ('me'). On your own, only your items count.
+ * Friends' shares are rounded to the sen and your share is the rest, so the shares add up to the bill exactly.
+ */
+export function allocate(receipt, assign, people, bill_sen, leftover = 'equal') {
+  const items = Object.fromEntries(people.map((p) => [p.key, 0]));
+  let unassigned = 0;
+  for (const it of receipt.items) {
+    const units = Object.entries(assign[it.id] || {}).filter(([key, n]) => key in items && n > 0);
+    const used = units.reduce((a, [, n]) => a + n, 0);
+    if (!used) { unassigned += it.amount_sen; continue; }
+    const per = it.amount_sen / Math.max(it.qty, used);
+    for (const [key, n] of units) items[key] += per * n;
+    unassigned += (it.amount_sen * Math.max(0, it.qty - used)) / it.qty;
+  }
+  const total = receipt.items_sen || 1;
+  const scale = bill_sen / total;
+  const friends = people.filter((p) => p.key !== 'me');
+  const extra = friends.length && leftover === 'equal' ? unassigned / people.length : 0;
+  const result = people.map((p) => ({ key: p.key, name: p.name, items_sen: Math.round(items[p.key]), share_sen: 0 }));
+  for (const r of result) {
+    if (r.key !== 'me') r.share_sen = Math.round((items[r.key] + extra) * scale);
+  }
+  const me = result.find((r) => r.key === 'me');
+  me.share_sen = friends.length
+    ? bill_sen - result.reduce((a, r) => a + (r.key === 'me' ? 0 : r.share_sen), 0)
+    : Math.round(items.me * scale);
+  return { people: result, unassigned_sen: Math.round(unassigned) };
+}
+
+/** What a person had, for the What field: "Nasi Lemak, 2× Teh Ais". */
+export function namesFor(receipt, assign, key) {
+  return receipt.items.filter((it) => assign[it.id]?.[key] > 0)
+    .map((it) => (it.qty > 1 && assign[it.id][key] > 1 ? `${assign[it.id][key]}× ${it.name}` : it.name)).join(', ').slice(0, 120);
+}

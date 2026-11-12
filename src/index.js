@@ -581,6 +581,10 @@ async function api(request, env, url) {
   }
 
   if (path === '/api/owed' && method === 'GET') return loadOwed(env);
+  if (path === '/api/friends' && method === 'GET') {
+    const { results } = await env.DB.prepare('SELECT MAX(friend) AS name FROM split_shares GROUP BY LOWER(friend) ORDER BY MAX(rowid) DESC LIMIT 20').all();
+    return json({ friends: results.map((r) => r.name) });
+  }
   if (path === '/api/receipt-items' && method === 'POST') return receiptItems(request, env);
   if (path === '/api/shortcuts' && method === 'GET') {
     const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'shortcuts'").first();

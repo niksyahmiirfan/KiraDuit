@@ -67,3 +67,44 @@ test('typing items in by hand starts empty and uses the items when no total is e
   assert.equal(shareOf(checked, { m0: 1 }).share_sen, 1123);
   assert.equal(shareOf({ ...checked, total_sen: 1500 }, { m0: 1 }).share_sen, Math.round((1500 * 1123) / 1397));
 });
+
+import { allocate, namesFor } from '../public/receipt.js';
+
+// The KFC receipt from the screenshot: items RM43.37, 6% service tax RM2.60, total RM45.97.
+const kfc = cleanReceipt({
+  items: [{ name: 'Krispy B (1pc)', qty: 1, amount: 10.99 }, { name: 'Krispy C (1pc)', qty: 2, amount: 23.98 }, { name: 'Drink', qty: 3, amount: 8.4 }],
+  charges: [{ name: 'Service Tax, 6%', amount: 2.6 }], total: 45.97,
+});
+const trio = [{ key: 'me', name: 'Me' }, { key: 'aina', name: 'Aina' }, { key: 'hafiz', name: 'Hafiz' }];
+
+test('each person pays for their own items plus their part of tax, adding up to the bill', () => {
+  const assign = { i0: { aina: 1 }, i1: { me: 1, hafiz: 1 }, i2: { me: 1, aina: 1, hafiz: 1 } };
+  const { people, unassigned_sen } = allocate(kfc, assign, trio, 4597);
+  const [me, aina, hafiz] = people;
+  assert.equal(unassigned_sen, 0);
+  assert.deepEqual([me.items_sen, aina.items_sen, hafiz.items_sen], [1479, 1379, 1479]);
+  assert.equal(aina.share_sen, Math.round(1379 * 4597 / 4337));
+  assert.equal(hafiz.share_sen, Math.round(1479 * 4597 / 4337));
+  assert.equal(me.share_sen + aina.share_sen + hafiz.share_sen, 4597);
+  assert.equal(namesFor(kfc, assign, 'me'), 'Krispy C (1pc), Drink');
+});
+
+test('a single item picked by two people is shared between them', () => {
+  const { people } = allocate(kfc, { i0: { me: 1, aina: 1 } }, trio.slice(0, 2), 4597, 'me');
+  assert.equal(people[1].items_sen, Math.round(1099 / 2));
+});
+
+test('items nobody picked are split equally, or left with you', () => {
+  const equal = allocate(kfc, { i0: { aina: 1 } }, trio.slice(0, 2), 4597, 'equal');
+  assert.equal(equal.unassigned_sen, 3238);
+  assert.equal(equal.people[1].share_sen, Math.round((1099 + 3238 / 2) * 4597 / 4337));
+  const mine = allocate(kfc, { i0: { aina: 1 } }, trio.slice(0, 2), 4597, 'me');
+  assert.equal(mine.people[1].share_sen, Math.round(1099 * 4597 / 4337));
+  assert.equal(mine.people[0].share_sen, 4597 - mine.people[1].share_sen);
+});
+
+test('on your own, only your items count, as before', () => {
+  const { people } = allocate(kfc, { i1: { me: 1 }, i2: { me: 1 } }, trio.slice(0, 1), 4597);
+  assert.equal(people[0].share_sen, shareOf(kfc, { i1: 1, i2: 1 }).share_sen);
+  assert.equal(people[0].share_sen, 1568);
+});
