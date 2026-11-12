@@ -1,4 +1,4 @@
-import { cleanReceipt, emptyReceipt, pickedNames, shareOf, withCheck } from './receipt.js';
+import { allocate, cleanReceipt, emptyReceipt, namesFor, withCheck } from './receipt.js';
 import { DEFAULT_SHORTCUTS, MAX_SHORTCUTS, cleanShortcut, cleanShortcuts, shortcutCaption, shortcutHref } from './shortcuts.js';
 import { cleanShares, equalShares, groupOwed, splitHint, usualFood } from './split.js';
 import { CATEGORIES, addDays, budgetLine, formatRM, localDate, allowanceFor, payPeriod, periodFor, previousRange, summarize, summarizePeriod, windowStart } from './summary.js';
@@ -138,6 +138,7 @@ const api = DEMO ? {
   },
   unsplit: async (id) => { const s = demoSplits.get(id); if (s) { demoTxs.find((x) => x.id === id).amount_sen = s.bill_sen; demoSplits.delete(id); } },
   owed: async () => ({ friends: groupOwed(demoOwedRows()) }),
+  friends: async () => ({ friends: [...new Set([...demoSplits.values()].flatMap((x) => x.shares.map((y) => y.friend)).concat(['Aina', 'Hafiz', 'Mei Ling', 'Arjun']))] }),
   receiptItems: async () => {
     await new Promise((r) => setTimeout(r, 500));
     return cleanReceipt({
@@ -196,6 +197,7 @@ const api = DEMO ? {
   saveSplit: (id, shares) => request(`/api/transactions/${id}/split`, { method: 'PUT', body: JSON.stringify({ shares }) }),
   unsplit: (id) => request(`/api/transactions/${id}/split`, { method: 'DELETE' }),
   owed: () => request('/api/owed'),
+  friends: () => request('/api/friends'),
   receiptItems: (body) => request('/api/receipt-items', { method: 'POST', body: JSON.stringify(body) }),
   shortcuts: () => request('/api/shortcuts'),
   saveShortcuts: (shortcuts) => request('/api/shortcuts', { method: 'PUT', body: JSON.stringify({ shortcuts }) }),
@@ -720,7 +722,7 @@ function openSheet(t) {
     <label>Time<input name="time" type="time" required value="${when.time}"></label></div>
     ${t ? `<button type="button" class="split-row" data-split-open>${icon('split')}<span>${t.bill_sen ? 'Split with friends' : 'Split this bill'}</span>
       <span>${t.bill_sen ? (t.owed_sen ? `${formatRM(t.owed_sen)} owed` : 'Settled') : ''}</span></button>` : ''}
-    ${t ? `<button type="button" class="split-row" data-pick-items>${icon('receipt')}<span>Pick my items from the receipt</span><span></span></button>` : ''}
+    ${t ? `<button type="button" class="split-row" data-pick-items>${icon('receipt')}<span>Split by receipt items</span><span></span></button>` : ''}
     ${t ? '<div id="receipt-area"></div>' : ''}
     <p class="error" hidden></p>
     <div class="actions">${t ? '<button type="button" class="quiet" data-del>Delete</button>' : '<button type="button" class="quiet" data-close>Cancel</button>'}
@@ -942,73 +944,133 @@ async function scanReceipt(body, purchase, photo) {
   }
 }
 
+// Receipt items are assigned to people: you, and any friends added. Each person's share includes their part of tax and charges.
 function openItemsSheet(read, purchase, photo) {
-  // Prices can be corrected and missed items added, so the receipt is kept as editable state.
   let receipt = withCheck({ ...read, items: read.items.map((it) => ({ ...it })) });
-  const picks = {};
+  const people = [{ key: 'me', name: 'You' }];
+  const assign = {}; // item id -> { person key: units }
+  let active = 'me';
+  let leftover = 'equal';
+  let recent = [];
+  let adding = false;
   let nextId = receipt.items.length;
   const fixedBill = purchase ? (purchase.bill_sen ?? purchase.amount_sen) : null;
   const bill = () => fixedBill ?? (receipt.total_sen || receipt.items_sen + receipt.charges_sen);
   const money = (v) => Math.round(parseFloat(String(v).replace(/[^\d.]/g, '')) * 100) || 0;
   const unit = (it) => formatRM(Math.round(it.amount_sen / it.qty));
+  const friends = () => people.filter((p) => p.key !== 'me');
+  const nameOf = (key) => people.find((p) => p.key === key)?.name || '';
+  const initials = (key) => (key === 'me' ? 'You' : nameOf(key).split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase());
+  const keyFor = (name) => `p-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  const unitsOf = (id, key) => assign[id]?.[key] || 0;
+
+  const badges = (it) => Object.entries(assign[it.id] || {}).filter(([, n]) => n > 0)
+    .map(([key, n]) => `<span class="who ${key === 'me' ? 'me' : ''}" title="${esc(nameOf(key))}">${esc(initials(key))}${it.qty > 1 ? ` ${n}` : ''}</span>`).join('');
   const row = (it) => `<div class="item-row" data-row="${it.id}">
-      <span class="item-name"><b>${esc(it.name)}</b>${it.qty > 1 ? `<small>${it.qty} × ${unit(it)}</small>` : ''}</span>
+      <span class="item-name"><b>${esc(it.name)}</b>${it.qty > 1 ? `<small>${it.qty} × ${unit(it)}</small>` : ''}<span class="badges" id="b-${it.id}">${badges(it)}</span></span>
       <input class="item-price" data-price="${it.id}" inputmode="decimal" value="${(it.amount_sen / 100).toFixed(2)}" aria-label="Price of ${esc(it.name)}, in RM">
       ${it.qty > 1
-        ? `<span class="stepper"><button type="button" data-units="${it.id}:-1" aria-label="One less ${esc(it.name)}">−</button>
-           <output id="u-${it.id}">${picks[it.id] || 0}</output><button type="button" data-units="${it.id}:1" aria-label="One more ${esc(it.name)}">+</button></span>`
-        : `<input type="checkbox" data-pick="${it.id}" ${picks[it.id] ? 'checked' : ''} aria-label="${esc(it.name)} is mine">`}</div>`;
+        ? `<span class="stepper"><button type="button" data-units="${it.id}:-1" aria-label="One less ${esc(it.name)} for ${esc(nameOf(active))}">−</button>
+           <output id="u-${it.id}">${unitsOf(it.id, active)}</output><button type="button" data-units="${it.id}:1" aria-label="One more ${esc(it.name)} for ${esc(nameOf(active))}">+</button></span>`
+        : `<input type="checkbox" data-pick="${it.id}" ${unitsOf(it.id, active) ? 'checked' : ''} aria-label="${esc(it.name)} for ${esc(nameOf(active))}">`}</div>`;
 
-  const draw = () => {
-    sheet.innerHTML = `<form method="dialog" class="items-sheet"><div class="sheet-head"><h2>Which items are yours?</h2>
+  let form;
+  const draw = (message = '') => {
+    const picks = recent.filter((n) => !people.some((p) => p.name.toLowerCase() === n.toLowerCase())).slice(0, 8);
+    sheet.innerHTML = `<form method="dialog" class="items-sheet"><div class="sheet-head"><h2>${friends().length ? 'Who had what?' : 'Which items are yours?'}</h2>
         <button type="button" class="sheet-close" data-close aria-label="Close">${icon('close')}</button></div>
-      <p class="hint">${receipt.items.length ? 'Tick your items. Tap a price to correct it.' : 'Add each item and its price from the receipt, then tick yours.'}</p>
+      <div class="people" role="radiogroup" aria-label="Assigning items to">
+        ${people.map((p) => `<button type="button" class="person ${p.key === active ? 'on' : ''}" role="radio" aria-checked="${p.key === active}" data-person="${p.key}">${esc(p.name)}</button>`).join('')}
+        <button type="button" class="person add" data-person-add aria-expanded="${adding}">+ Person</button></div>
+      ${adding ? `<div class="add-friend"><input id="person-name" maxlength="60" autocomplete="off" placeholder="Friend's name" aria-label="Friend's name"><button type="button" data-person-save>Add</button></div>
+        ${picks.length ? `<div class="chips">${picks.map((n) => `<button type="button" class="chip" data-person-pick="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : ''}` : ''}
+      <p class="hint">${receipt.items.length
+        ? (friends().length ? `Tick what <b>${esc(nameOf(active))}</b> had. Tick an item for two people to share it.` : 'Tick your items. To split with friends, add them with + Person.')
+        : 'Add each item and its price from the receipt.'}</p>
       <p class="flag-note" id="mismatch" hidden></p>
       <div class="item-list">${receipt.items.map(row).join('')}</div>
       <div class="add-item"><input id="new-item" maxlength="60" placeholder="Missing item" aria-label="Item name">
         <input id="new-price" inputmode="decimal" placeholder="RM" aria-label="Item price, in RM"><button type="button" data-add-item>Add</button></div>
       ${receipt.charges.length ? `<p class="hint charges">${receipt.charges.map((c) => `${esc(c.name)} ${formatRM(c.amount_sen)}`).join(' · ')}</p>` : ''}
       <label class="total-field">Receipt total (RM)<input id="receipt-total" inputmode="decimal" value="${receipt.total_sen ? (receipt.total_sen / 100).toFixed(2) : ''}" placeholder="Including tax and charges"></label>
-      <div class="share-box"><div><span>Your items</span><b id="sh-items">RM0.00</b></div>
-        <div><span>Your part of tax and charges</span><b id="sh-extra">RM0.00</b></div>
-        <div class="total"><span>Your share</span><b id="sh-total">RM0.00</b></div></div>
+      <div class="share-box" id="shares"></div>
       ${fixedBill !== null && fixedBill !== receipt.total_sen ? `<p class="hint">Worked out from the ${formatRM(fixedBill)} you paid.</p>` : ''}
       ${purchase ? '' : `<label>Where<input name="merchant" required maxlength="120" value="${esc(receipt.merchant || '')}" placeholder="Restoran XYZ"></label>
         <label>Category<select name="category">${CATEGORIES.map((c) => `<option ${c === 'Food' ? 'selected' : ''}>${c}</option>`).join('')}</select></label>`}
-      <p class="error" hidden></p>
-      <div class="actions">${purchase ? '<button type="button" class="quiet" data-set-mine>Set as my amount</button><button type="button" class="primary" data-split-rest>Split the rest</button>'
-        : '<span></span><button class="primary" data-log-share>Log my share</button>'}</div></form>`;
+      <p class="error" ${message ? '' : 'hidden'}>${esc(message)}</p>
+      <div class="actions" id="item-actions"></div></form>`;
+    form = sheet.querySelector('form');
     wire();
     update();
+    if (adding) form.querySelector('#person-name')?.focus();
   };
 
-  let form;
   const error = (m) => { const p = form.querySelector('.error'); p.hidden = !m; p.textContent = m || ''; };
-  const current = () => shareOf(receipt, picks, bill());
+  const current = () => allocate(receipt, assign, people, bill(), leftover);
+
   const update = () => {
-    const r = current();
-    form.querySelector('#sh-items').textContent = formatRM(r.items_sen);
-    form.querySelector('#sh-extra').textContent = formatRM(r.extra_sen);
-    form.querySelector('#sh-total').textContent = formatRM(r.share_sen);
+    const { people: shares, unassigned_sen } = current();
+    const scale = receipt.items_sen ? bill() / receipt.items_sen : 0;
+    const me = shares[0];
+    const box = form.querySelector('#shares');
+    if (!friends().length) {
+      box.innerHTML = `<div><span>Your items</span><b>${formatRM(me.items_sen)}</b></div>
+        <div><span>Your part of tax and charges</span><b>${formatRM(me.share_sen - me.items_sen)}</b></div>
+        <div class="total"><span>Your share</span><b>${formatRM(me.share_sen)}</b></div>`;
+    } else {
+      box.innerHTML = `${shares.map((p) => `<div class="${p.key === 'me' ? 'total' : ''}"><span>${esc(p.key === 'me' ? 'You' : p.name)}</span><b>${formatRM(p.share_sen)}</b></div>`).join('')}
+        ${unassigned_sen > 0 ? `<div class="leftover"><span>${formatRM(Math.round(unassigned_sen * scale))} of items not picked</span>
+          <select id="leftover" aria-label="Who pays for items not picked"><option value="equal" ${leftover === 'equal' ? 'selected' : ''}>Split equally</option>
+          <option value="me" ${leftover === 'me' ? 'selected' : ''}>I'll pay</option></select></div>` : ''}`;
+    }
     const note = form.querySelector('#mismatch');
     const target = receipt.subtotal_sen ?? receipt.total_sen - receipt.charges_sen;
     note.hidden = !receipt.mismatch_sen || !receipt.items.length;
     note.textContent = `The items add up to ${formatRM(receipt.items_sen)}, but the receipt ${receipt.subtotal_sen ? 'subtotal' : 'total before charges'} is ${formatRM(target)}. A price may be misread or an item missed. Correct it below.`;
-    const none = r.share_sen <= 0;
-    form.querySelectorAll('.actions button').forEach((b) => { b.disabled = none; });
-    const log = form.querySelector('[data-log-share]');
-    if (log) log.textContent = none ? 'Log my share' : `Log ${formatRM(r.share_sen)}`;
-    const rest = form.querySelector('[data-split-rest]');
-    if (rest) rest.disabled = none || r.share_sen >= bill();
+
+    const owed = shares.filter((p) => p.key !== 'me' && p.share_sen > 0);
+    const actions = form.querySelector('#item-actions');
+    if (purchase) {
+      actions.innerHTML = owed.length
+        ? `<span></span><button type="button" class="primary" data-save-split>Split with ${owed.length === 1 ? esc(owed[0].name) : `${owed.length} people`}</button>`
+        : `<button type="button" class="quiet" data-set-mine ${me.share_sen > 0 ? '' : 'disabled'}>Set as my amount</button>
+           <button type="button" class="primary" data-split-rest ${me.share_sen > 0 && me.share_sen < bill() ? '' : 'disabled'}>Split the rest</button>`;
+    } else {
+      actions.innerHTML = owed.length
+        ? `<button class="quiet" data-log-share ${me.share_sen > 0 ? '' : 'disabled'}>Log only mine</button>
+           <button type="button" class="primary" data-paid-all>I paid ${formatRM(bill())}, split it</button>`
+        : `<span></span><button class="primary" data-log-share ${me.share_sen > 0 ? '' : 'disabled'}>${me.share_sen > 0 ? `Log ${formatRM(me.share_sen)}` : 'Log my share'}</button>`;
+    }
   };
 
+  const refreshRow = (id) => {
+    const it = receipt.items.find((x) => x.id === id);
+    form.querySelector(`#b-${id}`).innerHTML = badges(it);
+  };
+  const addPerson = (raw) => {
+    const name = raw.trim().replace(/\s+/g, ' ').slice(0, 60);
+    if (!name) return;
+    if (name.toLowerCase() === 'you' || name.toLowerCase() === 'me' || people.some((p) => p.name.toLowerCase() === name.toLowerCase())) return draw(`${name} is already in this bill.`);
+    people.push({ key: keyFor(name), name });
+    active = keyFor(name);
+    adding = false;
+    draw();
+  };
+  // Friends who owe you are saved as a split, with your share being whatever is left of the bill.
+  const friendShares = () => current().people.filter((p) => p.key !== 'me' && p.share_sen > 0).map((p) => ({ friend: p.name, amount_sen: p.share_sen }));
+
   const wire = () => {
-    form = sheet.querySelector('form');
-    form.addEventListener('change', (e) => { if (e.target.dataset.pick) { picks[e.target.dataset.pick] = e.target.checked ? 1 : 0; update(); } });
+    form.addEventListener('change', (e) => {
+      if (e.target.dataset.pick) {
+        const id = e.target.dataset.pick;
+        assign[id] = { ...assign[id], [active]: e.target.checked ? 1 : 0 };
+        refreshRow(id);
+        update();
+      } else if (e.target.id === 'leftover') { leftover = e.target.value; update(); }
+    });
     form.addEventListener('input', (e) => {
       if (e.target.dataset.price) {
-        const it = receipt.items.find((x) => x.id === e.target.dataset.price);
-        it.amount_sen = money(e.target.value);
+        receipt.items.find((x) => x.id === e.target.dataset.price).amount_sen = money(e.target.value);
         receipt = withCheck(receipt);
         update();
       } else if (e.target.id === 'receipt-total') {
@@ -1016,57 +1078,89 @@ function openItemsSheet(read, purchase, photo) {
         update();
       }
     });
-    form.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.target.id === 'new-item' || e.target.id === 'new-price')) { e.preventDefault(); form.querySelector('[data-add-item]').click(); } });
+    form.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      if (e.target.id === 'person-name') { e.preventDefault(); addPerson(e.target.value); }
+      if (e.target.id === 'new-item' || e.target.id === 'new-price') { e.preventDefault(); form.querySelector('[data-add-item]').click(); }
+    });
     form.addEventListener('click', async (e) => {
       const el = e.target.closest('button');
       if (!el) return;
-      if (el.dataset.close !== undefined) return sheet.close();
-      if (el.dataset.addItem !== undefined) {
+      const d = el.dataset;
+      if (d.close !== undefined) return sheet.close();
+      if (d.person) { active = d.person; return draw(); }
+      if (d.personAdd !== undefined) {
+        adding = !adding;
+        if (adding && !recent.length) api.friends().then((r) => { recent = r.friends; if (adding) draw(); }).catch(() => {});
+        return draw();
+      }
+      if (d.personSave !== undefined) return addPerson(form.querySelector('#person-name').value);
+      if (d.personPick) return addPerson(d.personPick);
+      if (d.addItem !== undefined) {
         const name = form.querySelector('#new-item').value.trim();
         const amount_sen = money(form.querySelector('#new-price').value);
         if (!name || amount_sen <= 0) return error('Enter the item name and its price.');
         receipt.items.push({ id: `m${nextId++}`, name: name.slice(0, 60), qty: 1, amount_sen });
-        // With no total read, the total follows the items until one is entered.
-        receipt = withCheck({ ...receipt, total_sen: receipt.total_sen || 0 });
+        receipt = withCheck(receipt);
         draw();
         form.querySelector('#new-item').focus();
         return;
       }
-      if (el.dataset.units) {
-        const [id, step] = el.dataset.units.split(':');
+      if (d.units) {
+        const [id, step] = d.units.split(':');
         const it = receipt.items.find((x) => x.id === id);
-        picks[id] = Math.min(Math.max((picks[id] || 0) + Number(step), 0), it.qty);
-        form.querySelector(`#u-${id}`).textContent = picks[id];
+        const others = Object.entries(assign[id] || {}).reduce((a, [k, n]) => a + (k === active ? 0 : n), 0);
+        const next = Math.min(Math.max(unitsOf(id, active) + Number(step), 0), Math.max(it.qty - others, 0));
+        assign[id] = { ...assign[id], [active]: next };
+        form.querySelector(`#u-${id}`).textContent = next;
+        refreshRow(id);
         update();
         return;
       }
-      if (!purchase) return;
-      const r = current();
-      const names = pickedNames(receipt, picks);
+      const mine = current().people[0];
+      const myNames = namesFor(receipt, assign, 'me');
       try {
-        if (el.dataset.setMine !== undefined) {
-          await api.update(purchase.id, { amount: (r.share_sen / 100).toFixed(2), ...(purchase.item ? {} : { item: names }) });
+        if (d.setMine !== undefined) {
+          await api.update(purchase.id, { amount: (mine.share_sen / 100).toFixed(2), ...(purchase.item ? {} : { item: myNames }) });
           sheet.close();
-        } else if (el.dataset.splitRest !== undefined) {
-          if (!purchase.item && names) { await api.update(purchase.id, { item: names }); purchase.item = names; }
-          openSplitSheet(purchase, { mine: r.share_sen });
+        } else if (d.splitRest !== undefined) {
+          if (!purchase.item && myNames) { await api.update(purchase.id, { item: myNames }); purchase.item = myNames; }
+          openSplitSheet(purchase, { mine: mine.share_sen });
+        } else if (d.saveSplit !== undefined) {
+          if (!purchase.item && myNames) await api.update(purchase.id, { item: myNames });
+          await api.saveSplit(purchase.id, friendShares());
+          sheet.close();
+        } else if (d.paidAll !== undefined) {
+          const merchant = form.elements.merchant.value.trim();
+          if (!merchant) return error('Enter where you paid.');
+          const added = await logPurchase(bill(), merchant, myNames);
+          await api.saveSplit(added.id, friendShares());
+          finish();
         }
       } catch (err) { error(err.message); }
     });
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const r = current();
-      if (r.share_sen <= 0) return error('Tick at least one item, and check the receipt total.');
-      const now = new Date();
+      const mine = current().people[0];
+      if (mine.share_sen <= 0) return error('Tick at least one item, and check the receipt total.');
       try {
-        const added = await api.add({ amount: (r.share_sen / 100).toFixed(2), merchant: form.elements.merchant.value.trim(), item: pickedNames(receipt, picks),
-          category: form.elements.category.value, date: localDate(now), time: localParts(now.toISOString()).time });
-        if (photo && added?.id) await api.setReceipt(added.id, photo).catch(() => {});
-        sheet.close();
-        if (page === 'day') { date = localDate(now); selected = null; }
-        refresh();
+        await logPurchase(mine.share_sen, form.elements.merchant.value.trim(), namesFor(receipt, assign, 'me'));
+        finish();
       } catch (err) { error(err.message); }
     };
+  };
+
+  const logPurchase = async (amount_sen, merchant, item) => {
+    const now = new Date();
+    const added = await api.add({ amount: (amount_sen / 100).toFixed(2), merchant, item, category: form.elements.category.value,
+      date: localDate(now), time: localParts(now.toISOString()).time });
+    if (photo && added?.id) await api.setReceipt(added.id, photo).catch(() => {});
+    return added;
+  };
+  const finish = () => {
+    sheet.close();
+    if (page === 'day') { date = localDate(); selected = null; }
+    refresh();
   };
 
   draw();
