@@ -607,7 +607,7 @@ function render() {
       <p class="readout">${dayName(date, { month: 'long' })} so far: ${formatRM(s.monthTotal)}</p>
     </section>
     <section><h2>Purchases</h2>
-      ${s.count ? purchaseList(s) : `<p class="empty">Double-tap the back of your iPhone on a ShopeePay receipt, or tap with Apple Pay. Purchases appear here.</p>`}
+      ${s.count ? purchaseList(s) : `<p class="empty">Double-tap the back of your iPhone on a QR payment receipt, or tap with Apple Pay. Purchases appear here.</p>`}
     </section>
     ${dock()}`;
   setOver(Boolean(s.budget) && s.total > s.budget);
