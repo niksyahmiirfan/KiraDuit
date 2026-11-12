@@ -199,9 +199,11 @@ const getDefaultBudget = async (env) => {
 async function budgetFor(env, date) {
   const set = await env.DB.prepare('SELECT amount_sen FROM budgets WHERE local_date = ?').bind(date).first();
   if (set) return { amount: set.amount_sen, source: 'set' };
-  if (date !== localDate()) return { amount: null, source: null };
+  // The default applies to every day, so past days keep a budget once they're no longer today.
   const fallback = await getDefaultBudget(env);
   if (fallback) return { amount: fallback, source: 'default' };
+  // Can-spend-per-day depends on spending before that day, so it's only worked out for today and earlier.
+  if (date > localDate()) return { amount: null, source: null };
   const { start } = payPeriod(date);
   const [income, commitments, spent] = await Promise.all([
     getIncome(env, start),
